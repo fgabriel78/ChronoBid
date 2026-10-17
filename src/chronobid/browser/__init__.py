@@ -1,6 +1,6 @@
 """Motor de navegador CDP e interacción con Catawiki."""
 
-from clock_agent.browser.catawiki_page import (
+from chronobid.browser.catawiki_page import (
     CatawikiLotPage,
     CatawikiSelectors,
     LotPageSnapshot,
@@ -9,7 +9,7 @@ from clock_agent.browser.catawiki_page import (
     parse_euro_amount,
     parse_network_bidding_payload,
 )
-from clock_agent.browser.cdp_client import (
+from chronobid.browser.cdp_client import (
     BrowserConnectionError,
     CDPBrowserClient,
     SessionNotAuthenticatedError,

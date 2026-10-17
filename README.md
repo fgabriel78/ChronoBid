@@ -1,4 +1,4 @@
-# ClockAgent
+# ChronoBid
 
 Agente autónomo de pujas de relojes en **Catawiki** controlado mediante un fichero **Excel (`.xlsx`)** en segundo plano, con contabilidad atómica de presupuesto en euros, optimizador dinámico de cartera para maximizar el número de relojes adjudicados y conexión vía **Chrome DevTools Protocol (CDP)** sobre la sesión autenticada del usuario.
 
@@ -40,7 +40,7 @@ pip install -e ".[dev]"
 ### 1. Generar la plantilla Excel
 
 ```powershell
-clock-agent --init-excel relojes.xlsx --budget 1500
+chronobid --init-excel relojes.xlsx --budget 1500
 ```
 
 Abre `relojes.xlsx`, ajusta el **Presupuesto Global (EUR)** en la celda `B1` y añade en las filas a partir de la `7` la **URL del lote en Catawiki** (columna `A`) y tu **Puja Máxima limpia en euros** (columna `B`).
@@ -50,13 +50,13 @@ Abre `relojes.xlsx`, ajusta el **Presupuesto Global (EUR)** en la celda `B1` y a
 Puedes obtener el comando exacto para Windows ejecutando:
 
 ```powershell
-clock-agent --print-browser-cmd chrome
+chronobid --print-browser-cmd chrome
 ```
 
 O ejecutar directamente en **PowerShell** (nota el operador `&` al principio para rutas entre comillas):
 
 ```powershell
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:LOCALAPPDATA\ClockAgent\chrome-profile" https://www.catawiki.com/es/
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:LOCALAPPDATA\ChronoBid\chrome-profile" https://www.catawiki.com/es/
 ```
 
 Inicia sesión normalmente en tu cuenta de Catawiki dentro de esa ventana del navegador.
@@ -64,7 +64,7 @@ Inicia sesión normalmente en tu cuenta de Catawiki dentro de esa ventana del na
 ### 3. Lanzar el agente
 
 ```powershell
-clock-agent --excel relojes.xlsx --cdp-port 9222
+chronobid --excel relojes.xlsx --cdp-port 9222
 ```
 
 ---

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from clock_agent.models.auction import (
+from chronobid.models.auction import (
     AuctionStatus,
     BidDecision,
     ReserveStatus,
     WatchLot,
 )
-from clock_agent.strategy.ledger import BudgetLedger
-from clock_agent.strategy.optimizer import PortfolioOptimizer
+from chronobid.strategy.ledger import BudgetLedger
+from chronobid.strategy.optimizer import PortfolioOptimizer
 
 
 class TacticalBiddingEngine:

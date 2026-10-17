@@ -1,8 +1,8 @@
 """Tests para PortfolioOptimizer: poda en vivo, reserva multi-reloj y techo dinámico."""
 
-from clock_agent.models.auction import AuctionStatus, WatchLot
-from clock_agent.strategy.ledger import BudgetLedger
-from clock_agent.strategy.optimizer import PortfolioOptimizer
+from chronobid.models.auction import AuctionStatus, WatchLot
+from chronobid.strategy.ledger import BudgetLedger
+from chronobid.strategy.optimizer import PortfolioOptimizer
 
 
 def test_optimizer_prunes_lots_exceeding_max_bid() -> None:

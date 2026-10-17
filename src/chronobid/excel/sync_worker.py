@@ -8,12 +8,12 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
-from clock_agent.excel.workbook_io import (
+from chronobid.excel.workbook_io import (
     WorkbookConfigSnapshot,
     read_workbook_config,
     write_workbook_state,
 )
-from clock_agent.models.auction import GlobalBudgetState, WatchLot
+from chronobid.models.auction import GlobalBudgetState, WatchLot
 
 logger = logging.getLogger(__name__)
 

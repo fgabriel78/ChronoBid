@@ -5,9 +5,9 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from clock_agent.excel.sync_worker import ExcelSyncWorker
-from clock_agent.excel.workbook_io import create_excel_template, write_workbook_state
-from clock_agent.models.auction import (
+from chronobid.excel.sync_worker import ExcelSyncWorker
+from chronobid.excel.workbook_io import create_excel_template, write_workbook_state
+from chronobid.models.auction import (
     AuctionStatus,
     GlobalBudgetState,
     ReserveStatus,

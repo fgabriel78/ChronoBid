@@ -2,7 +2,7 @@
 
 ## Context
 
-Ver `proposal.md` para la motivación del proyecto. `ClockAgent` debe operar sobre subastas reales de Catawiki desde una máquina Windows, tomando como única fuente de órdenes un archivo Excel local (`.xlsx`) y reportando en él la evolución de cada lote.
+Ver `proposal.md` para la motivación del proyecto. `ChronoBid` debe operar sobre subastas reales de Catawiki desde una máquina Windows, tomando como única fuente de órdenes un archivo Excel local (`.xlsx`) y reportando en él la evolución de cada lote.
 
 Restricciones técnicas clave del entorno:
 1. **Ausencia de API pública y protección DataDome/Cloudflare**: Las peticiones HTTP directas fuera de un navegador real son bloqueadas por huella TLS (JA3/JA4) y telemetría de comportamiento.

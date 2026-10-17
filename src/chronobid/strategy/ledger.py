@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from clock_agent.models.auction import GlobalBudgetState
+from chronobid.models.auction import GlobalBudgetState
 
 
 class BudgetLedger:

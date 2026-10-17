@@ -6,13 +6,13 @@ from pathlib import Path
 import pytest
 from openpyxl import load_workbook
 
-from clock_agent.excel.workbook_io import (
+from chronobid.excel.workbook_io import (
     FIRST_DATA_ROW,
     create_excel_template,
     read_workbook_config,
     write_workbook_state,
 )
-from clock_agent.models.auction import (
+from chronobid.models.auction import (
     AuctionStatus,
     GlobalBudgetState,
     ReserveStatus,

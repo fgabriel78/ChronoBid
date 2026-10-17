@@ -1,4 +1,4 @@
-"""Interfaz de línea de comandos (CLI) con panel en vivo Rich para ClockAgent."""
+"""Interfaz de línea de comandos (CLI) con panel en vivo Rich para ChronoBid."""
 
 from __future__ import annotations
 
@@ -13,16 +13,16 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 
-from clock_agent.browser.cdp_client import (
+from chronobid.browser.cdp_client import (
     BrowserConnectionError,
     CDPBrowserClient,
     SessionNotAuthenticatedError,
     build_browser_launch_command,
 )
-from clock_agent.excel.workbook_io import create_excel_template
-from clock_agent.models.auction import WatchLot
-from clock_agent.orchestrator import AuctionOrchestrator
-from clock_agent.strategy.ledger import BudgetLedger
+from chronobid.excel.workbook_io import create_excel_template
+from chronobid.models.auction import WatchLot
+from chronobid.orchestrator import AuctionOrchestrator
+from chronobid.strategy.ledger import BudgetLedger
 
 
 def build_dashboard_renderable(lots: list[WatchLot], ledger: BudgetLedger) -> Group:
@@ -34,7 +34,7 @@ def build_dashboard_renderable(lots: list[WatchLot], ledger: BudgetLedger) -> Gr
         f"[bold yellow]Comprometido (Líder):[/bold yellow] {snap.committed_leader_eur} €   |   "
         f"[bold white]Saldo Disponible:[/bold white] {snap.available_eur} €"
     )
-    budget_panel = Panel(budget_summary, title="ClockAgent · Contabilidad Atómica", border_style="cyan")
+    budget_panel = Panel(budget_summary, title="ChronoBid · Contabilidad Atómica", border_style="cyan")
 
     table = Table(expand=True, show_lines=False)
     table.add_column("Fila", justify="right", style="dim", width=5)
@@ -71,7 +71,7 @@ def build_dashboard_renderable(lots: list[WatchLot], ledger: BudgetLedger) -> Gr
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="clock-agent",
+        prog="chronobid",
         description=(
             "Agente autónomo de pujas de relojes en Catawiki controlado por Excel (.xlsx) "
             "con contabilidad atómica de presupuesto y conexión CDP a navegador autenticado."

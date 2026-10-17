@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from clock_agent.models.auction import ReserveStatus
+from chronobid.models.auction import ReserveStatus
 
 
 @dataclass(frozen=True)

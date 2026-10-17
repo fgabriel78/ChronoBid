@@ -4,10 +4,10 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from clock_agent.browser.catawiki_page import LotPageSnapshot, compute_catawiki_next_min_bid
-from clock_agent.excel.workbook_io import create_excel_template
-from clock_agent.models.auction import AuctionStatus, ReserveStatus, WatchLot
-from clock_agent.orchestrator import AuctionOrchestrator
+from chronobid.browser.catawiki_page import LotPageSnapshot, compute_catawiki_next_min_bid
+from chronobid.excel.workbook_io import create_excel_template
+from chronobid.models.auction import AuctionStatus, ReserveStatus, WatchLot
+from chronobid.orchestrator import AuctionOrchestrator
 
 
 class SimulatedLiveAuctionRoom:

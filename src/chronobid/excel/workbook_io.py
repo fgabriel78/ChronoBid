@@ -13,7 +13,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
-from clock_agent.models.auction import (
+from chronobid.models.auction import (
     AuctionStatus,
     GlobalBudgetState,
     ReserveStatus,
@@ -84,7 +84,7 @@ def create_excel_template(
     default_budget_eur: int = 1500,
     sample_rows: list[tuple[str, int]] | None = None,
 ) -> Path:
-    """Crea un fichero Excel (.xlsx) con el formato oficial de ClockAgent."""
+    """Crea un fichero Excel (.xlsx) con el formato oficial de ChronoBid."""
     target = Path(file_path)
     target.parent.mkdir(parents=True, exist_ok=True)
 

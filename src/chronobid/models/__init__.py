@@ -1,6 +1,6 @@
 """Modelos de dominio de subastas, lotes y presupuesto."""
 
-from clock_agent.models.auction import (
+from chronobid.models.auction import (
     AuctionStatus,
     BidDecision,
     GlobalBudgetState,

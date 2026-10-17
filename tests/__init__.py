@@ -1,1 +1,1 @@
-"""Suite de tests de ClockAgent."""
+"""Suite de tests de ChronoBid."""

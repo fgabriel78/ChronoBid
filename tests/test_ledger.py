@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from clock_agent.strategy.ledger import BudgetLedger
+from chronobid.strategy.ledger import BudgetLedger
 
 
 async def test_ledger_reserve_differential_release_and_confirm_won() -> None:

@@ -1,4 +1,4 @@
-"""Orquestador principal (Modo Patrulla y Modo Asalto concurrente) para ClockAgent."""
+"""Orquestador principal (Modo Patrulla y Modo Asalto concurrente) para ChronoBid."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Protocol
 
-from clock_agent.browser.catawiki_page import CatawikiLotPage, LotPageSnapshot
-from clock_agent.browser.cdp_client import CDPBrowserClient
-from clock_agent.excel.sync_worker import ExcelSyncWorker
-from clock_agent.excel.workbook_io import read_workbook_config
-from clock_agent.models.auction import AuctionStatus, WatchLot
-from clock_agent.strategy.ledger import BudgetLedger
-from clock_agent.strategy.optimizer import PortfolioOptimizer
-from clock_agent.strategy.tactics import TacticalBiddingEngine
+from chronobid.browser.catawiki_page import CatawikiLotPage, LotPageSnapshot
+from chronobid.browser.cdp_client import CDPBrowserClient
+from chronobid.excel.sync_worker import ExcelSyncWorker
+from chronobid.excel.workbook_io import read_workbook_config
+from chronobid.models.auction import AuctionStatus, WatchLot
+from chronobid.strategy.ledger import BudgetLedger
+from chronobid.strategy.optimizer import PortfolioOptimizer
+from chronobid.strategy.tactics import TacticalBiddingEngine
 
 logger = logging.getLogger(__name__)
 

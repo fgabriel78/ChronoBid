@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from clock_agent.models.auction import AuctionStatus, WatchLot
-from clock_agent.strategy.ledger import BudgetLedger
+from chronobid.models.auction import AuctionStatus, WatchLot
+from chronobid.strategy.ledger import BudgetLedger
 
 
 class PortfolioOptimizer:

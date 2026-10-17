@@ -48,7 +48,7 @@ def build_browser_launch_command(
     profile_dir = (
         str(user_data_dir)
         if user_data_dir is not None
-        else r"$env:LOCALAPPDATA\ClockAgent\chrome-profile"
+        else r"$env:LOCALAPPDATA\ChronoBid\chrome-profile"
     )
     if browser.lower() == "edge":
         exe = r'"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"'

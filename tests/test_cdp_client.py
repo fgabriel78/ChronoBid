@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from clock_agent.browser.cdp_client import (
+from chronobid.browser.cdp_client import (
     BrowserConnectionError,
     CDPBrowserClient,
     SessionNotAuthenticatedError,

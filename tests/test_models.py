@@ -1,8 +1,8 @@
-"""Tests unitarios de los modelos de dominio en clock_agent.models.auction."""
+"""Tests unitarios de los modelos de dominio en chronobid.models.auction."""
 
 import pytest
 
-from clock_agent.models.auction import (
+from chronobid.models.auction import (
     AuctionStatus,
     BidDecision,
     GlobalBudgetState,

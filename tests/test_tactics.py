@@ -1,9 +1,9 @@
 """Tests unitarios del motor táctico en tests/test_tactics.py."""
 
-from clock_agent.models.auction import AuctionStatus, ReserveStatus, WatchLot
-from clock_agent.strategy.ledger import BudgetLedger
-from clock_agent.strategy.optimizer import PortfolioOptimizer
-from clock_agent.strategy.tactics import TacticalBiddingEngine
+from chronobid.models.auction import AuctionStatus, ReserveStatus, WatchLot
+from chronobid.strategy.ledger import BudgetLedger
+from chronobid.strategy.optimizer import PortfolioOptimizer
+from chronobid.strategy.tactics import TacticalBiddingEngine
 
 
 def test_tactics_invisibility_before_25_seconds() -> None:

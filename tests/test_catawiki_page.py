@@ -4,13 +4,13 @@ from typing import Any
 
 import pytest
 
-from clock_agent.browser.catawiki_page import (
+from chronobid.browser.catawiki_page import (
     CatawikiLotPage,
     parse_countdown_seconds,
     parse_euro_amount,
     parse_network_bidding_payload,
 )
-from clock_agent.models.auction import ReserveStatus
+from chronobid.models.auction import ReserveStatus
 
 
 class SimulatedElement:

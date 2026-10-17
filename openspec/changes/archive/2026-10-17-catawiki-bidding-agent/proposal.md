@@ -6,7 +6,7 @@ Participar manualmente en subastas de relojes en Catawiki requiere estar present
 
 ## What Changes
 
-- Creación del agente autónomo `ClockAgent` en Python 3.11+ (`asyncio` + `playwright` + `openpyxl` + `rich`) para la gestión integral de pujas de relojes en Catawiki.
+- Creación del agente autónomo `ChronoBid` en Python 3.11+ (`asyncio` + `playwright` + `openpyxl` + `rich`) para la gestión integral de pujas de relojes en Catawiki.
 - Implementación de un motor de control y reporte en segundo plano basado en un fichero Excel (`.xlsx`) con tolerancia a bloqueos de lectura/escritura cuando el usuario abre el archivo en Windows.
 - Integración con Catawiki mediante conexión **Chrome DevTools Protocol (CDP)** sobre el navegador real ya autenticado del usuario, evitando bloqueos anti-bot (DataDome/Cloudflare) y operando en dos velocidades: *Modo Patrulla* (> 5 min para el cierre) y *Modo Asalto* (< 5 min y prórrogas de +90s).
 - Implementación de un **Gestor Atómico de Presupuesto (Ledger)** en tiempo real (`Disponible = Global - Ganados - Comprometidos como líder actual`) y un **Optimizador Dinámico de Cartera** que ajusta el techo efectivo de cada lote activo para maximizar el número total de relojes ganados.
@@ -20,10 +20,10 @@ Participar manualmente en subastas de relojes en Catawiki requiere estar present
 - `bidding-strategy-portfolio`: Contabilidad atómica de presupuesto en vuelo, poda automática de lotes que superan su máximo y cálculo del Techo Dinámico (`Dynamic Ceiling`) para maximizar el número de relojes conseguidos dentro del presupuesto global.
 
 ### Modified Capabilities
-<!-- No hay capacidades previas modificadas al tratarse de la creación inicial del proyecto ClockAgent. -->
+<!-- No hay capacidades previas modificadas al tratarse de la creación inicial del proyecto ChronoBid. -->
 
 ## Impact
 
-- **Nuevo código base en `ClockAgent`**: Estructura modular en Python (`src/clock_agent/`) con paquetes dedicados a `excel/`, `browser/`, `strategy/`, `models/` y CLI de arranque.
+- **Nuevo código base en `ChronoBid`**: Estructura modular en Python (`src/chronobid/`) con paquetes dedicados a `excel/`, `browser/`, `strategy/`, `models/` y CLI de arranque.
 - **Dependencias principales**: `playwright` (conexión CDP y automatización DOM/red), `openpyxl` (lectura y escritura de `.xlsx`), `rich` (telemetría en consola), `pytest` + `pytest-asyncio` (tests unitarios y de simulación de subastas).
 - **Entorno de ejecución**: Windows con navegador basado en Chromium (Chrome, Edge o Brave) lanzado con `--remote-debugging-port=9222` y sesión iniciada en Catawiki.
