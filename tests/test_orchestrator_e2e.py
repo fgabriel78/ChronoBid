@@ -649,3 +649,349 @@ def test_orchestrator_calculate_patrol_wait_seconds_adaptive(tmp_path: Path) -> 
     wait_far = orchestrator._calculate_patrol_wait_seconds()
     assert wait_far == 15.0
 
+
+@pytest.mark.asyncio
+async def test_orchestrator_dynamic_excel_budget_and_max_bid_update(tmp_path: Path) -> None:
+    """
+    Verifica que al modificar el presupuesto global (B1) y la puja máxima limpia (columna B)
+    en el fichero Excel durante la ejecución, el orquestador actualiza el Ledger y los techos en caliente.
+    """
+    excel_path = tmp_path / "cartera_live_budget.xlsx"
+    url = "https://www.catawiki.com/es/l/950001-omega-speedmaster"
+    create_excel_template(excel_path, default_budget_eur=1000, sample_rows=[(url, 500)])
+
+    class DummyController:
+        async def extract_snapshot(self) -> LotPageSnapshot:
+            return LotPageSnapshot(
+                title="Omega Speedmaster",
+                current_bid_eur=200,
+                next_min_bid_eur=220,
+                seconds_remaining=1000.0,
+                is_leader=False,
+                reserve_status=ReserveStatus.NO_RESERVE,
+                is_closed=False,
+            )
+
+        async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
+            return await self.extract_snapshot()
+
+        async def close(self) -> None:
+            pass
+
+    async def controller_factory(lot: WatchLot) -> DummyController:
+        return DummyController()
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        controller_factory=controller_factory,
+        excel_poll_interval_seconds=0.01,
+        patrol_interval_seconds=1.0,
+    )
+    assert orchestrator.ledger.global_budget_eur == 1000
+    assert orchestrator.lots[0].max_bid_eur == 500
+
+    # Ejecutar una patrulla inicial
+    await orchestrator.run_patrol_step()
+    assert orchestrator.lots[0].status == AuctionStatus.PATROL
+
+    # Modificar el Excel en disco: B1 = 2500, puja máxima en B7 = 750
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    ws["B1"].value = 2500
+    ws["B7"].value = 750
+    wb.save(excel_path)
+    wb.close()
+
+    # Comprobar la recarga en caliente
+    reloaded = await orchestrator._check_and_reload_excel()
+    assert reloaded is True
+    assert orchestrator.ledger.global_budget_eur == 2500
+    assert orchestrator.ledger.available_eur == 2500
+    assert orchestrator.lots[0].max_bid_eur == 750
+    assert orchestrator.lots[0].effective_ceiling_eur == 750
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_dynamic_excel_revive_discarded_lot(tmp_path: Path) -> None:
+    """
+    Verifica que si un lote estaba descartado por superar su tope previo (DISCARDED_MAX_EXCEEDED),
+    un aumento de la puja máxima limpia en el Excel reactiva automáticamente el lote.
+    """
+    excel_path = tmp_path / "cartera_revive.xlsx"
+    url = "https://www.catawiki.com/es/l/950002-rolex-submariner"
+    create_excel_template(excel_path, default_budget_eur=2000, sample_rows=[(url, 300)])
+
+    class DiscardController:
+        async def extract_snapshot(self) -> LotPageSnapshot:
+            return LotPageSnapshot(
+                title="Rolex Submariner",
+                current_bid_eur=350,
+                next_min_bid_eur=380,  # 380 > 300 -> se descarta
+                seconds_remaining=800.0,
+                is_leader=False,
+                reserve_status=ReserveStatus.NO_RESERVE,
+                is_closed=False,
+            )
+
+        async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
+            return await self.extract_snapshot()
+
+        async def close(self) -> None:
+            pass
+
+    async def controller_factory(lot: WatchLot) -> DiscardController:
+        return DiscardController()
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        controller_factory=controller_factory,
+        excel_poll_interval_seconds=0.01,
+    )
+    await orchestrator.run_patrol_step()
+    lot = orchestrator.lots[0]
+    assert lot.status == AuctionStatus.DISCARDED_MAX_EXCEEDED
+
+    # El usuario edita el Excel y sube el tope a 450 € (>= 380 €)
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    ws["B7"].value = 450
+    wb.save(excel_path)
+    wb.close()
+
+    changed = await orchestrator._check_and_reload_excel()
+    assert changed is True
+    assert lot.max_bid_eur == 450
+    assert lot.status == AuctionStatus.PATROL
+    assert "Reactivado" in lot.notes
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_dynamic_excel_add_and_remove_lot(tmp_path: Path) -> None:
+    """
+    Verifica que añadir una fila nueva en el Excel da de alta el lote en PENDING y lo patrulla,
+    y que borrar una fila lo elimina del seguimiento y cancela sus tareas.
+    """
+    excel_path = tmp_path / "cartera_add_remove.xlsx"
+    url1 = "https://www.catawiki.com/es/l/950003-tag-heuer"
+    url2 = "https://www.catawiki.com/es/l/950004-breitling-navitimer"
+    create_excel_template(excel_path, default_budget_eur=3000, sample_rows=[(url1, 400)])
+
+    visited_lots: list[str] = []
+
+    class TrackController:
+        def __init__(self, lot_id: str) -> None:
+            self.lot_id = lot_id
+
+        async def extract_snapshot(self) -> LotPageSnapshot:
+            visited_lots.append(self.lot_id)
+            return LotPageSnapshot(
+                title=f"Watch {self.lot_id}",
+                current_bid_eur=100,
+                next_min_bid_eur=110,
+                seconds_remaining=500.0,
+                is_leader=False,
+                reserve_status=ReserveStatus.NO_RESERVE,
+                is_closed=False,
+            )
+
+        async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
+            return await self.extract_snapshot()
+
+        async def close(self) -> None:
+            pass
+
+    async def controller_factory(lot: WatchLot) -> TrackController:
+        return TrackController(lot.lot_id)
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        controller_factory=controller_factory,
+        excel_poll_interval_seconds=0.01,
+        patrol_interval_seconds=0.05,
+    )
+    assert len(orchestrator.lots) == 1
+
+    # 1. Añadir un nuevo reloj en fila 8
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    ws["A8"].value = url2
+    ws["B8"].value = 600
+    wb.save(excel_path)
+    wb.close()
+
+    changed = await orchestrator._check_and_reload_excel()
+    assert changed is True
+    assert len(orchestrator.lots) == 2
+    assert orchestrator.lots[1].url == url2
+    assert orchestrator.lots[1].max_bid_eur == 600
+    assert orchestrator.lots[1].status == AuctionStatus.PENDING
+
+    # Patrullar para asegurar que el nuevo lote se procesa
+    await orchestrator.run_patrol_step()
+    assert any("950004" in v for v in visited_lots)
+    assert orchestrator.lots[1].status == AuctionStatus.PATROL
+
+    # 2. Eliminar el primer reloj (fila 7) en el Excel
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    ws["A7"].value = None
+    ws["B7"].value = None
+    wb.save(excel_path)
+    wb.close()
+
+    changed = await orchestrator._check_and_reload_excel()
+    assert changed is True
+    assert len(orchestrator.lots) == 1
+    assert orchestrator.lots[0].url == url2
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_dynamic_excel_ignores_internal_writes(tmp_path: Path) -> None:
+    """
+    Verifica que las escrituras periódicas de salida de ChronoBid (columnas C:J y B2:B4)
+    no disparan recargas en caliente espurias gracias a la firma de entradas.
+    """
+    excel_path = tmp_path / "cartera_no_retrigger.xlsx"
+    url = "https://www.catawiki.com/es/l/950005-cartier-santos"
+    create_excel_template(excel_path, default_budget_eur=1500, sample_rows=[(url, 800)])
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        excel_poll_interval_seconds=0.01,
+    )
+
+    # Modificar únicamente columnas de salida (B2 gastado, C7 título, E7 estado)
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    ws["B2"].value = 200
+    ws["C7"].value = "Cartier Santos Automático"
+    ws["E7"].value = "PATRULLA"
+    wb.save(excel_path)
+    wb.close()
+
+    # _check_and_reload_excel debe detectar que los inputs (B1, A:B) no cambiaron
+    changed = await orchestrator._check_and_reload_excel()
+    assert changed is False
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_dynamic_excel_tolerates_transient_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Verifica que si el archivo Excel está transitoriamente bloqueado (PermissionError / OSError),
+    _check_and_reload_excel maneja el error sin lanzar excepción y permite reintentar en el siguiente sondeo.
+    """
+    excel_path = tmp_path / "cartera_lock.xlsx"
+    url = "https://www.catawiki.com/es/l/950006-zenith-el-primero"
+    create_excel_template(excel_path, default_budget_eur=2000, sample_rows=[(url, 900)])
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        excel_poll_interval_seconds=0.01,
+    )
+
+    # Modificar el archivo en disco
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    ws["B1"].value = 3500
+    wb.save(excel_path)
+    wb.close()
+
+    # Simular bloqueo de Windows en extract_input_signature
+    import chronobid.orchestrator as orch_module
+
+    def mock_extract(path):
+        return None  # Devuelve None tal como ocurre ante PermissionError
+
+    monkeypatch.setattr(orch_module, "extract_input_signature", mock_extract)
+
+    changed = await orchestrator._check_and_reload_excel()
+    assert changed is False
+    assert orchestrator.ledger.global_budget_eur == 2000
+
+    # Quitar el mock: el siguiente sondeo debe reconciliar correctamente
+    monkeypatch.undo()
+    changed_retry = await orchestrator._check_and_reload_excel()
+    assert changed_retry is True
+    assert orchestrator.ledger.global_budget_eur == 3500
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_run_until_complete_live_reload_wakes_patrol(tmp_path: Path) -> None:
+    """
+    Verifica que al añadir un reloj en el Excel durante run_until_complete(),
+    la espera de patrulla despierta de inmediato mediante _reload_event
+    sin esperar el intervalo completo de 10 segundos.
+    """
+    excel_path = tmp_path / "cartera_wake.xlsx"
+    url1 = "https://www.catawiki.com/es/l/950010-watch-one"
+    url2 = "https://www.catawiki.com/es/l/950011-watch-two"
+    create_excel_template(excel_path, default_budget_eur=2000, sample_rows=[(url1, 500)])
+
+    queried_lots: list[str] = []
+
+    class FastController:
+        def __init__(self, lot: WatchLot) -> None:
+            self.lot = lot
+
+        async def extract_snapshot(self) -> LotPageSnapshot:
+            queried_lots.append(self.lot.url)
+            return LotPageSnapshot(
+                title=f"Watch {self.lot.lot_id}",
+                current_bid_eur=100,
+                next_min_bid_eur=110,
+                seconds_remaining=1000.0,
+                is_leader=False,
+                reserve_status=ReserveStatus.NO_RESERVE,
+                is_closed=False,
+            )
+
+        async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
+            return await self.extract_snapshot()
+
+        async def close(self) -> None:
+            pass
+
+    async def controller_factory(lot: WatchLot) -> FastController:
+        return FastController(lot)
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        controller_factory=controller_factory,
+        excel_poll_interval_seconds=0.02,
+        patrol_interval_seconds=10.0,  # 10s wait
+    )
+
+    run_task = asyncio.create_task(orchestrator.run_until_complete())
+
+    # Esperar a que haga la primera patrulla del reloj 1
+    for _ in range(50):
+        if url1 in queried_lots:
+            break
+        await asyncio.sleep(0.01)
+    assert url1 in queried_lots
+    assert url2 not in queried_lots
+
+    # Ahora el orquestador está en su espera de patrulla de 10s.
+    # Modificamos el Excel añadiendo el reloj 2
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    ws["A8"].value = url2
+    ws["B8"].value = 600
+    wb.save(excel_path)
+    wb.close()
+
+    # Esperamos muy poco tiempo (mucho menor que los 10s de patrol_interval_seconds)
+    for _ in range(50):
+        if url2 in queried_lots:
+            break
+        await asyncio.sleep(0.02)
+
+    orchestrator.request_stop()
+    await run_task
+
+    assert url2 in queried_lots
+    assert len(orchestrator.lots) == 2
+
+

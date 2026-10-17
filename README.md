@@ -1,31 +1,31 @@
 # ChronoBid
 
-Agente autónomo de pujas de relojes en **Catawiki** controlado mediante un fichero **Excel (`.xlsx`)** en segundo plano, con contabilidad atómica de presupuesto en euros, optimizador dinámico de cartera para maximizar el número de relojes adjudicados y conexión vía **Chrome DevTools Protocol (CDP)** sobre la sesión autenticada del usuario.
+Autonomous watch bidding agent for **Catawiki** controlled via a background **Excel (`.xlsx`)** spreadsheet, featuring atomic budget accounting in euros, a dynamic portfolio optimizer to maximize the number of awarded watches, and a connection via **Chrome DevTools Protocol (CDP)** using the user's authenticated session.
 
 ---
 
-## Características Principales
+## Key Features
 
-1. **Control y Reporte en Segundo Plano por Excel (`.xlsx`)**:
-   - Define en la celda `B1` tu **Presupuesto Global (EUR)** y en las columnas `A` y `B` (desde la fila 7) la **URL de Catawiki** y tu **Puja Máxima limpia (EUR)** por cada reloj.
-   - `ExcelSyncWorker` actualiza automáticamente el presupuesto gastado (`B2`), comprometido como líder (`B3`), disponible (`B4`) y las columnas de estado (`C:J`) tolerando bloqueos (`PermissionError`) cuando abres el archivo en Microsoft Excel.
-2. **Conexión Transparente a Navegador Autenticado (CDP)**:
-   - Se enlaza a tu instancia real de Chrome o Edge (`--remote-debugging-port=9222`), reutilizando tu sesión iniciada en Catawiki sin exponer contraseñas ni disparar bloqueos anti-bot.
-3. **Dos Velocidades Operativas**:
-   - **Modo Patrulla (> 5 min)**: Vigilancia periódica ligera y poda automática de relojes que superen tu máximo antes del cierre.
-   - **Modo Asalto (≤ 5 min y prórrogas de +90s)**: Pestaña dedicada en tiempo real para cada lote en sus minutos finales.
-4. **Tácticas de Asalto y Escalera de Precio de Reserva**:
-   - **Invisibilidad hasta `< 25s`**: No revela tu interés ni tu tope máximo antes de los últimos 25 segundos.
-   - **Puja por incremento mínimo**: Siempre puja el siguiente escalón mínimo exigido por Catawiki.
-   - **Bucle de +90 segundos**: Contraataca durante las prórrogas mientras el siguiente escalón mínimo no supere el Techo Dinámico ($E_i$) ni el saldo disponible.
-   - **Escalera de Precio de Reserva**: Si ya eres el máximo pujador en los últimos 25s pero persiste el aviso *"Precio de reserva no alcanzado"*, sube escalón a escalón y se detiene en el instante exacto en que desaparece dicho aviso.
-5. **Optimizador Dinámico de Cartera (`PortfolioOptimizer`) y `BudgetLedger` Atómico**:
-   - Garantiza mediante un `asyncio.Lock` que la suma de relojes ganados más las pujas donde eres líder provisional jamás exceda el presupuesto global.
-   - Ajusta el Techo Dinámico ($E_i \le M_i$) reservando capital cuando una combinación de 2 o más relojes futuros baratos y con alta holgura permita ganar más relojes con el mismo presupuesto.
+1. **Background Excel (`.xlsx`) Control & Reporting**:
+   - Define your **Global Budget (EUR)** in cell `B1`, and each watch's **Catawiki URL** and **Clean Maximum Bid (EUR)** in columns `A` and `B` (starting from row 7).
+   - `ExcelSyncWorker` automatically updates the spent budget (`B2`), committed budget as leading bidder (`B3`), available balance (`B4`), and status columns (`C:J`), tolerating file locks (`PermissionError`) when the spreadsheet is open in Microsoft Excel.
+2. **Transparent Connection to Authenticated Browser (CDP)**:
+   - Connects to your real Chrome or Edge instance (`--remote-debugging-port=9222`), reusing your logged-in Catawiki session without exposing credentials or triggering anti-bot protections.
+3. **Two Operating Speeds**:
+   - **Patrol Mode (> 5 min)**: Lightweight periodic monitoring and automatic pruning of watches that exceed your maximum bid before closing.
+   - **Assault / Snipe Mode (≤ 5 min and +90s extensions)**: Dedicated real-time tab for each lot in its final minutes.
+4. **Assault Tactics & Reserve Price Ladder**:
+   - **Invisibility until `< 25s`**: Does not reveal your interest or upper ceiling before the final 25 seconds.
+   - **Minimum increment bidding**: Always bids the next minimum required step on Catawiki.
+   - **+90-second loop**: Counter-attacks during extensions as long as the next minimum step does not exceed the Dynamic Ceiling ($E_i$) or available balance.
+   - **Reserve Price Ladder**: If you are already the highest bidder in the last 25s but the *"Reserve price not met"* notice persists, steps up increment by increment and stops the exact instant the notice disappears.
+5. **Dynamic Portfolio Optimizer (`PortfolioOptimizer`) & Atomic `BudgetLedger`**:
+   - Guarantees via `asyncio.Lock` that the sum of won watches plus bids where you are currently leading never exceeds the global budget.
+   - Dynamically adjusts the Effective Ceiling ($E_i \le M_i$), reserving capital when a combination of 2 or more future affordable watches with high headroom allows winning more watches with the same budget.
 
 ---
 
-## Instalación
+## Installation
 
 ```powershell
 python -m venv .venv
@@ -35,33 +35,33 @@ pip install -e ".[dev]"
 
 ---
 
-## Guía de Uso Rápido
+## Quick Start Guide
 
-### 1. Generar la plantilla Excel
+### 1. Generate the Excel template
 
 ```powershell
 chronobid --init-excel relojes.xlsx --budget 1500
 ```
 
-Abre `relojes.xlsx`, ajusta el **Presupuesto Global (EUR)** en la celda `B1` y añade en las filas a partir de la `7` la **URL del lote en Catawiki** (columna `A`) y tu **Puja Máxima limpia en euros** (columna `B`).
+Open `relojes.xlsx`, set the **Global Budget (EUR)** in cell `B1`, and add the **Catawiki lot URL** (column `A`) and your **Clean Maximum Bid in euros** (column `B`) starting from row `7`.
 
-### 2. Abrir tu navegador con depuración remota (CDP) e iniciar sesión en Catawiki
+### 2. Launch your browser with remote debugging (CDP) and log into Catawiki
 
-Puedes obtener el comando exacto para Windows ejecutando:
+You can get the exact Windows command by running:
 
 ```powershell
 chronobid --print-browser-cmd chrome
 ```
 
-O ejecutar directamente en **PowerShell** (nota el operador `&` al principio para rutas entre comillas):
+Or run directly in **PowerShell** (note the `&` operator at the beginning for quoted paths):
 
 ```powershell
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:LOCALAPPDATA\ChronoBid\chrome-profile" https://www.catawiki.com/es/
 ```
 
-Inicia sesión normalmente en tu cuenta de Catawiki dentro de esa ventana del navegador.
+Log in normally to your Catawiki account within that browser window.
 
-### 3. Lanzar el agente
+### 3. Launch the agent
 
 ```powershell
 chronobid --excel relojes.xlsx --cdp-port 9222
@@ -69,7 +69,7 @@ chronobid --excel relojes.xlsx --cdp-port 9222
 
 ---
 
-## Ejecución de Tests
+## Running Tests
 
 ```powershell
 pytest -v

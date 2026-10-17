@@ -9,6 +9,8 @@ from openpyxl import load_workbook
 from chronobid.excel.workbook_io import (
     FIRST_DATA_ROW,
     create_excel_template,
+    extract_input_signature,
+    make_input_signature_from_memory,
     read_workbook_config,
     write_workbook_state,
 )
@@ -188,4 +190,53 @@ def test_read_workbook_config_ignores_error_titles(tmp_path: Path) -> None:
     assert len(config.lots) == 1
     lot = config.lots[0]
     assert lot.title == ""  # Debe haber ignorado el mensaje de error
+
+
+def test_extract_input_signature_detects_changes(tmp_path: Path) -> None:
+    excel_path = tmp_path / "signature_test.xlsx"
+    rows = [
+        ("https://www.catawiki.com/es/l/1001-omega", 500),
+        ("https://www.catawiki.com/es/l/1002-seiko", 300),
+    ]
+    create_excel_template(excel_path, default_budget_eur=1000, sample_rows=rows)
+
+    cfg = read_workbook_config(excel_path)
+    sig_disk = extract_input_signature(excel_path)
+    assert sig_disk is not None
+    assert sig_disk.global_budget_eur == 1000
+    assert len(sig_disk.lots_inputs) == 2
+
+    sig_mem = make_input_signature_from_memory(cfg.global_budget_eur, cfg.lots)
+    assert sig_disk == sig_mem
+
+    # Modificar B1 en Excel -> cambia la firma
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    assert ws is not None
+    ws["B1"].value = 1500
+    wb.save(excel_path)
+    wb.close()
+
+    sig_new = extract_input_signature(excel_path)
+    assert sig_new is not None
+    assert sig_new != sig_mem
+    assert sig_new.global_budget_eur == 1500
+
+    # Añadir nueva fila -> cambia la firma
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    assert ws is not None
+    ws.cell(row=9, column=1, value="https://www.catawiki.com/es/l/1003-tissot")
+    ws.cell(row=9, column=2, value=200)
+    wb.save(excel_path)
+    wb.close()
+
+    sig_added = extract_input_signature(excel_path)
+    assert sig_added is not None
+    assert len(sig_added.lots_inputs) == 3
+    assert sig_added != sig_new
+
+    # Archivo inexistente devuelve None
+    assert extract_input_signature(tmp_path / "non_existent.xlsx") is None
+
 

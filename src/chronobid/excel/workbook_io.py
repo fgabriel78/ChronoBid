@@ -48,6 +48,82 @@ class WorkbookConfigSnapshot:
     lots: list[WatchLot]
 
 
+@dataclass(frozen=True)
+class ExcelInputSignature:
+    """Firma inmutable de las entradas del usuario (B1 y columnas A:B desde fila 7)."""
+
+    global_budget_eur: int
+    lots_inputs: tuple[tuple[str, int, int], ...]  # ((url, max_bid_eur, row_idx), ...)
+
+
+def extract_input_signature(file_path: str | Path) -> ExcelInputSignature | None:
+    """
+    Lee de forma ligera las celdas de entrada del usuario (B1 y columnas A:B desde fila 7).
+    Devuelve ExcelInputSignature, o None si el archivo no existe, está bloqueado
+    (PermissionError/OSError) o contiene datos temporales no parseables.
+    """
+    target = Path(file_path)
+    if not target.exists():
+        return None
+    try:
+        wb = load_workbook(target, data_only=True, read_only=True)
+    except (PermissionError, OSError):
+        return None
+    except Exception:
+        return None
+
+    try:
+        ws = wb.active
+        if ws is None:
+            return None
+        raw_budget = ws["B1"].value
+        budget = _parse_positive_eur(raw_budget)
+        if budget is None:
+            return None
+
+        inputs: list[tuple[str, int, int]] = []
+        max_row = max(ws.max_row or FIRST_DATA_ROW, FIRST_DATA_ROW - 1)
+        for r in range(FIRST_DATA_ROW, max_row + 1):
+            raw_url = ws.cell(row=r, column=1).value
+            raw_max_bid = ws.cell(row=r, column=2).value
+            if (raw_url is None or str(raw_url).strip() == "") and (
+                raw_max_bid is None or str(raw_max_bid).strip() == ""
+            ):
+                continue
+            url_str = str(raw_url).strip() if raw_url is not None else ""
+            max_bid = _parse_positive_eur(raw_max_bid) or 0
+            inputs.append((url_str, max_bid, r))
+
+        return ExcelInputSignature(
+            global_budget_eur=budget,
+            lots_inputs=tuple(inputs),
+        )
+    except (PermissionError, OSError):
+        return None
+    except Exception:
+        return None
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+
+
+def make_input_signature_from_memory(
+    global_budget_eur: int,
+    lots: list[WatchLot],
+) -> ExcelInputSignature:
+    """Construye una firma de entrada equivalente a partir del estado en memoria."""
+    inputs = tuple(
+        (lot.url, lot.max_bid_eur, lot.row_index if lot.row_index is not None else 0)
+        for lot in lots
+    )
+    return ExcelInputSignature(
+        global_budget_eur=global_budget_eur,
+        lots_inputs=inputs,
+    )
+
+
 def _parse_positive_eur(value: Any) -> int | None:
     """Convierte un valor de celda en un entero positivo en euros, o None si es inválido."""
     if value is None or isinstance(value, bool):

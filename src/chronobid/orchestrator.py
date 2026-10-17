@@ -15,7 +15,12 @@ from chronobid.browser.catawiki_page import (
 )
 from chronobid.browser.cdp_client import CDPBrowserClient
 from chronobid.excel.sync_worker import ExcelSyncWorker
-from chronobid.excel.workbook_io import read_workbook_config
+from chronobid.excel.workbook_io import (
+    WorkbookConfigSnapshot,
+    extract_input_signature,
+    make_input_signature_from_memory,
+    read_workbook_config,
+)
 from chronobid.models.auction import AuctionStatus, WatchLot
 from chronobid.strategy.ledger import BudgetLedger
 from chronobid.strategy.optimizer import PortfolioOptimizer
@@ -76,6 +81,7 @@ class AuctionOrchestrator:
         assault_tick_seconds: float = 0.25,
         snipe_window_seconds: float = 25.0,
         excel_retry_seconds: float = 2.0,
+        excel_poll_interval_seconds: float = 2.0,
         on_state_change: Callable[[list[WatchLot], BudgetLedger], None] | None = None,
     ) -> None:
         self.excel_path = Path(excel_path)
@@ -84,6 +90,7 @@ class AuctionOrchestrator:
         self.assault_threshold_seconds = assault_threshold_seconds
         self.patrol_interval_seconds = patrol_interval_seconds
         self.assault_tick_seconds = assault_tick_seconds
+        self.excel_poll_interval_seconds = excel_poll_interval_seconds
         self.on_state_change = on_state_change
 
         config = read_workbook_config(self.excel_path)
@@ -98,6 +105,186 @@ class AuctionOrchestrator:
 
         self._assault_tasks: dict[str, asyncio.Task[None]] = {}
         self._stop_event = asyncio.Event()
+        self._reload_event = asyncio.Event()
+        self._last_excel_mtime = self._get_excel_mtime()
+        self._last_input_signature = make_input_signature_from_memory(
+            config.global_budget_eur, self.lots
+        )
+
+    def _get_excel_mtime(self) -> float:
+        """Obtiene la fecha de última modificación (mtime) del fichero Excel en disco."""
+        try:
+            return self.excel_path.stat().st_mtime
+        except (OSError, FileNotFoundError):
+            return 0.0
+
+    async def _check_and_reload_excel(self) -> bool:
+        """
+        Comprueba si el fichero Excel ha sido modificado en disco.
+        Si la firma de entradas del usuario ha cambiado respecto a la activa en memoria,
+        dispara la reconciliación del estado.
+        Retorna True si hubo cambios reconciliados, False en caso contrario.
+        """
+        current_mtime = self._get_excel_mtime()
+        if current_mtime == 0.0 or current_mtime <= self._last_excel_mtime:
+            return False
+
+        # El mtime cambió. Extraemos la firma de inputs (B1 y columnas A:B) para discriminar
+        # entre una edición manual del usuario y un flush interno de ExcelSyncWorker.
+        new_sig = extract_input_signature(self.excel_path)
+        if new_sig is None:
+            # Archivo temporalmente bloqueado o ilegible; no actualizar mtime para reintentar
+            return False
+
+        if new_sig == self._last_input_signature:
+            # Fue una escritura interna de ChronoBid (o sin cambios de input)
+            self._last_excel_mtime = current_mtime
+            return False
+
+        # Hay cambios de usuario en las entradas. Leemos la configuración completa.
+        try:
+            new_config = read_workbook_config(self.excel_path)
+        except (PermissionError, OSError) as err:
+            logger.debug("Bloqueo transitorio al leer configuración de Excel: %s", err)
+            return False
+        except Exception as exc:
+            logger.warning("Error al recargar configuración de Excel: %s", exc)
+            return False
+
+        self._last_excel_mtime = current_mtime
+        changed = await self.reconcile_with_excel(new_config)
+        return changed
+
+    async def reconcile_with_excel(self, new_config: WorkbookConfigSnapshot) -> bool:
+        """
+        Reconcilia en caliente el estado en memoria con la nueva configuración de Excel:
+          - Sincroniza el presupuesto global en el ledger.
+          - Actualiza topes de puja y filas de lotes existentes.
+          - Reactiva lotes descartados por exceso de tope si el nuevo tope los hace viables.
+          - Da de alta nuevos lotes en estado PENDING y despierta la patrulla.
+          - Da de baja lotes eliminados del Excel (cancela tareas de asalto y libera reservas).
+        Retorna True si hubo cambios aplicados.
+        """
+        changed = False
+
+        # 1. Presupuesto global (B1)
+        if new_config.global_budget_eur != self.ledger.global_budget_eur:
+            try:
+                await self.ledger.update_global_budget(new_config.global_budget_eur)
+                logger.info(
+                    "Presupuesto global actualizado en caliente: %d € -> %d €",
+                    self.ledger.global_budget_eur,
+                    new_config.global_budget_eur,
+                )
+                changed = True
+            except ValueError as exc:
+                logger.warning(
+                    "No se pudo actualizar el presupuesto global a %d €: %s",
+                    new_config.global_budget_eur,
+                    exc,
+                )
+
+        # Mapeo de lotes por URL
+        existing_by_url = {lot.url: lot for lot in self.lots}
+        new_by_url = {lot.url: lot for lot in new_config.lots}
+
+        # 2. Bajas: lotes existentes cuya URL ya no está en new_config
+        lots_to_remove = [lot for url, lot in existing_by_url.items() if url not in new_by_url]
+        for lot in lots_to_remove:
+            if lot.lot_id in self._assault_tasks:
+                task = self._assault_tasks.pop(lot.lot_id)
+                task.cancel()
+                logger.info("Tarea de asalto cancelada para lote eliminado: %s", lot.lot_id)
+            if lot.status != AuctionStatus.WON:
+                await self.ledger.release(lot.lot_id)
+            changed = True
+            logger.info("Lote eliminado del seguimiento: %s (%s)", lot.lot_id, lot.url)
+
+        remaining_lots = [lot for lot in self.lots if lot.url in new_by_url]
+
+        # 3. Modificaciones de lotes existentes
+        for lot in remaining_lots:
+            cfg = new_by_url[lot.url]
+            if lot.row_index != cfg.row_index:
+                lot.row_index = cfg.row_index
+                changed = True
+
+            if lot.status == AuctionStatus.VALIDATION_ERROR and cfg.validate_inputs():
+                lot.max_bid_eur = cfg.max_bid_eur
+                lot.status = AuctionStatus.PENDING
+                lot.notes = ""
+                changed = True
+                self._reload_event.set()
+                logger.info("Lote %s corregido y reactivado a PENDING", lot.lot_id)
+            elif lot.max_bid_eur != cfg.max_bid_eur:
+                old_max = lot.max_bid_eur
+                lot.max_bid_eur = cfg.max_bid_eur
+                changed = True
+                logger.info(
+                    "Tope de puja actualizado para %s: %d € -> %d €",
+                    lot.lot_id,
+                    old_max,
+                    lot.max_bid_eur,
+                )
+
+                if lot.status == AuctionStatus.DISCARDED_MAX_EXCEEDED and not lot.is_closed:
+                    if lot.next_min_bid_eur is not None and lot.max_bid_eur >= lot.next_min_bid_eur:
+                        if (
+                            lot.seconds_remaining is not None
+                            and lot.seconds_remaining <= self.assault_threshold_seconds
+                        ):
+                            lot.status = AuctionStatus.ASSAULT
+                            self._spawn_assault_task(lot)
+                        else:
+                            lot.status = AuctionStatus.PATROL
+                        lot.notes = f"Reactivado tras aumento de puja máxima a {lot.max_bid_eur} €"
+                        self._reload_event.set()
+                        logger.info(
+                            "Lote %s reactivado a %s tras aumento de tope",
+                            lot.lot_id,
+                            lot.status.value,
+                        )
+                elif (
+                    not lot.is_leader
+                    and lot.next_min_bid_eur is not None
+                    and lot.next_min_bid_eur > 0
+                    and lot.max_bid_eur < lot.next_min_bid_eur
+                    and not lot.is_closed
+                ):
+                    lot.status = AuctionStatus.DISCARDED_MAX_EXCEEDED
+                    lot.notes = (
+                        f"Descartado: nuevo tope ({lot.max_bid_eur} €) menor que puja mínima "
+                        f"({lot.next_min_bid_eur} €)"
+                    )
+                    logger.info(
+                        "Lote %s descartado por reducción de tope por debajo de la puja mínima",
+                        lot.lot_id,
+                    )
+
+        # 4. Altas: lotes en new_config cuya URL no estaba en existing_by_url
+        new_lots = [lot for url, lot in new_by_url.items() if url not in existing_by_url]
+        if new_lots:
+            remaining_lots.extend(new_lots)
+            changed = True
+            self._reload_event.set()
+            for nlot in new_lots:
+                logger.info(
+                    "Nuevo lote añadido al catálogo: %s (fila %s, max %d €)",
+                    nlot.lot_id,
+                    nlot.row_index,
+                    nlot.max_bid_eur,
+                )
+
+        remaining_lots.sort(key=lambda x: (x.row_index if x.row_index is not None else 999999))
+        self.lots = remaining_lots
+
+        if changed:
+            self._last_input_signature = make_input_signature_from_memory(
+                self.ledger.global_budget_eur, self.lots
+            )
+            self._emit_and_enqueue()
+
+        return changed
 
     async def _default_controller_factory(self, lot: WatchLot) -> LotPageControllerProtocol:
         if self.cdp_client is None:
@@ -307,6 +494,31 @@ class AuctionOrchestrator:
         finally:
             await controller.close()
 
+    async def _wait_interval_with_reload_check(self, total_wait_seconds: float) -> None:
+        """
+        Espera hasta `total_wait_seconds` en tramos de `excel_poll_interval_seconds`.
+        En cada tramo verifica si el Excel cambió. Si se detecta un nuevo lote o reactivación
+        (_reload_event.is_set()), o se solicita parada (_stop_event.is_set()), despierta de inmediato.
+        """
+        elapsed = 0.0
+        while elapsed < total_wait_seconds and not self._stop_event.is_set():
+            if self._reload_event.is_set():
+                self._reload_event.clear()
+                break
+            chunk = min(self.excel_poll_interval_seconds, total_wait_seconds - elapsed)
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=chunk)
+                break
+            except asyncio.TimeoutError:
+                pass
+            elapsed += chunk
+            if self._stop_event.is_set():
+                break
+            await self._check_and_reload_excel()
+            if self._reload_event.is_set():
+                self._reload_event.clear()
+                break
+
     async def run_until_complete(self) -> None:
         """
         Ejecuta el orquestador completo (ExcelSyncWorker + bucle Patrulla/Asalto)
@@ -325,6 +537,8 @@ class AuctionOrchestrator:
                 self.has_active_lots()
                 or any(not t.done() for t in self._assault_tasks.values())
             ):
+                await self._check_and_reload_excel()
+
                 pending_patrol = self._get_pending_patrol_lots()
                 if pending_patrol:
                     await self.run_patrol_step()
@@ -337,29 +551,23 @@ class AuctionOrchestrator:
                 if pending_after_patrol:
                     # Quedan lotes en patrulla: esperar el intervalo de patrulla (con anticipación si procede)
                     wait_time = self._calculate_patrol_wait_seconds(pending_after_patrol)
-                    try:
-                        await asyncio.wait_for(self._stop_event.wait(), timeout=wait_time)
-                    except asyncio.TimeoutError:
-                        pass
+                    await self._wait_interval_with_reload_check(wait_time)
                 elif active_assault_tasks:
                     # Todos los lotes activos están en tareas de asalto: esperar pasivamente a que alguna termine
-                    # o que se solicite la parada, sin busy-wait de 50ms
+                    # o que venza un intervalo breve, comprobando recargas en caliente
                     try:
                         await asyncio.wait(
                             active_assault_tasks,
-                            timeout=min(self.patrol_interval_seconds, 0.5),
+                            timeout=min(self.excel_poll_interval_seconds, 0.5),
                             return_when=asyncio.FIRST_COMPLETED,
                         )
                     except asyncio.TimeoutError:
                         pass
+                    await self._check_and_reload_excel()
+                    if self._reload_event.is_set():
+                        self._reload_event.clear()
                 elif self.has_active_lots():
-                    try:
-                        await asyncio.wait_for(
-                            self._stop_event.wait(),
-                            timeout=self.patrol_interval_seconds,
-                        )
-                    except asyncio.TimeoutError:
-                        pass
+                    await self._wait_interval_with_reload_check(self.patrol_interval_seconds)
 
             if self._assault_tasks:
                 await asyncio.gather(*self._assault_tasks.values(), return_exceptions=True)
