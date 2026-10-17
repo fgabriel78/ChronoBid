@@ -399,3 +399,127 @@ async def test_orchestrator_patrol_syncs_and_releases_leader_commitment_in_ledge
     wb2.close()
 
 
+async def test_orchestrator_unconfirmed_bid_releases_budget_without_false_outbid(
+    tmp_path: Path,
+) -> None:
+    """
+    Si submit_minimum_bid devuelve un snapshot donde la puja no llegó a confirmarse
+    (is_leader=False y current_bid_eur < bid_amt), el orquestador:
+      1. No debe registrar lot.my_last_bid_eur ni marcar falsamente el lote como SUPERADO.
+      2. Debe liberar de inmediato la reserva en BudgetLedger.
+      3. Puede reintentar la puja en el siguiente tick de asalto y ganarla cuando se confirma.
+    """
+    excel_path = tmp_path / "cartera_unconfirmed_bid.xlsx"
+    url = "https://www.catawiki.com/es/l/900099-opening-lot"
+
+    create_excel_template(
+        excel_path,
+        default_budget_eur=500,
+        sample_rows=[(url, 100)],
+    )
+
+    state_after_first_attempt: dict[str, object] = {}
+
+    class UnconfirmedThenConfirmedController:
+        def __init__(self, target_lot: WatchLot, orchestrator_ref: list[AuctionOrchestrator]) -> None:
+            self.lot = target_lot
+            self.orchestrator_ref = orchestrator_ref
+            self.extract_calls = 0
+            self.submit_calls = 0
+            self.confirmed = False
+
+        async def extract_snapshot(self) -> LotPageSnapshot:
+            self.extract_calls += 1
+            if self.extract_calls == 2:
+                # Justo al inicio del tick 2, capturamos cómo quedó el lote tras el intento fallido del tick 1
+                orch = self.orchestrator_ref[0]
+                state_after_first_attempt["my_last_bid_eur"] = self.lot.my_last_bid_eur
+                state_after_first_attempt["status"] = self.lot.status
+                state_after_first_attempt["committed_eur"] = orch.ledger.committed_leader_eur
+                state_after_first_attempt["notes"] = self.lot.notes
+
+            if not self.confirmed:
+                return LotPageSnapshot(
+                    title="Tissot Opening Lot",
+                    current_bid_eur=0,
+                    next_min_bid_eur=1,
+                    seconds_remaining=18.0 if self.extract_calls == 1 else 12.0,
+                    is_leader=False,
+                    reserve_status=ReserveStatus.NO_RESERVE,
+                    is_closed=False,
+                )
+
+            return LotPageSnapshot(
+                title="Tissot Opening Lot",
+                current_bid_eur=1,
+                next_min_bid_eur=2,
+                seconds_remaining=0.0,
+                is_leader=True,
+                reserve_status=ReserveStatus.NO_RESERVE,
+                is_closed=True,
+            )
+
+        async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
+            self.submit_calls += 1
+            if self.submit_calls == 1:
+                # Primer intento: el modal de confirmación no llegó a aceptarse en Catawiki
+                return LotPageSnapshot(
+                    title="Tissot Opening Lot",
+                    current_bid_eur=0,
+                    next_min_bid_eur=1,
+                    seconds_remaining=15.0,
+                    is_leader=False,
+                    reserve_status=ReserveStatus.NO_RESERVE,
+                    is_closed=False,
+                )
+
+            # Segundo intento: la confirmación se completa y pasamos a ser líderes con 1 €
+            self.confirmed = True
+            return LotPageSnapshot(
+                title="Tissot Opening Lot",
+                current_bid_eur=1,
+                next_min_bid_eur=2,
+                seconds_remaining=10.0,
+                is_leader=True,
+                reserve_status=ReserveStatus.NO_RESERVE,
+                is_closed=False,
+            )
+
+        async def close(self) -> None:
+            pass
+
+    orchestrator_holder: list[AuctionOrchestrator] = []
+
+    async def controller_factory(lot: WatchLot) -> UnconfirmedThenConfirmedController:
+        return UnconfirmedThenConfirmedController(lot, orchestrator_holder)
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        controller_factory=controller_factory,
+        assault_threshold_seconds=300.0,
+        patrol_interval_seconds=0.01,
+        assault_tick_seconds=0.005,
+        snipe_window_seconds=25.0,
+        excel_retry_seconds=0.01,
+    )
+    orchestrator_holder.append(orchestrator)
+
+    lot = orchestrator.lots[0]
+    lot.seconds_remaining = 20.0
+    lot.status = AuctionStatus.ASSAULT
+
+    await orchestrator._run_assault_for_lot(lot)
+    await orchestrator.sync_worker.flush_once()
+
+    # Verificaciones tras el primer intento no confirmado
+    assert state_after_first_attempt["my_last_bid_eur"] == 0
+    assert state_after_first_attempt["status"] == AuctionStatus.ASSAULT
+    assert state_after_first_attempt["status"] != AuctionStatus.OUTBID
+    assert state_after_first_attempt["committed_eur"] == 0
+    assert "no confirmada" in str(state_after_first_attempt["notes"])
+
+    # Verificaciones tras el reintento confirmado y cierre de la subasta
+    assert lot.my_last_bid_eur == 1
+    assert lot.current_bid_eur == 1
+    assert lot.status == AuctionStatus.WON
+    assert orchestrator.ledger.spent_eur == 1

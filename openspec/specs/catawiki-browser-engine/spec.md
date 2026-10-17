@@ -30,7 +30,7 @@ El sistema SHALL monitorizar los relojes con cierre lejano (> 5 minutos) mediant
 
 #### Scenario: Tratamiento de lotes en apertura inicial sin pujas previas
 - **WHEN** un lote activo en consulta no registra ninguna puja previa en su historial o muestra estado inicial de apertura
-- **THEN** el sistema adopta el importe de salida o primer botón de puja rápida como siguiente escalón mínimo admisible sin descartar el lote por comparativa estricta contra una puja actual ficticia
+- **THEN** el sistema adopta el importe de salida o primer botón de puja rápida como siguiente escalón mínimo admisible sin descartar el lote por comparativa estricta contra una puja actual ficticia, y en cuanto el DOM en vivo o la red reflejen que ya se ha registrado una puja o el liderazgo del usuario en la misma pestaña, deja de forzar la puja actual a cero aunque el estado SSR inicial permanezca sin recargar
 
 #### Scenario: Tolerancia a fallo puntual durante la ronda de patrulla
 - **WHEN** la consulta a un lote durante la patrulla devuelve una lectura de error temporal de red o plataforma
@@ -56,7 +56,11 @@ El sistema SHALL abstenerse de realizar pujas hasta los últimos segundos config
 
 #### Scenario: Envío de puja mediante botón rápido o campo numérico
 - **WHEN** se ordena el envío del escalón mínimo de puja a la página del lote
-- **THEN** el sistema pulsa el botón de puja rápida si coincide exactamente con el importe o introduce el valor en el campo de puja y confirma la acción en la interfaz
+- **THEN** el sistema pulsa el botón de puja rápida si coincide exactamente con el importe o introduce el valor en el campo de puja y pulsa el botón de puja directa (nunca el de fijar puja máxima automática), espera activamente a que se monte el diálogo modal de confirmación de Catawiki, pulsa el botón principal de confirmar puja y aguarda a la actualización del estado antes de extraer la nueva instantánea
+
+#### Scenario: Registro condicionado a la aceptación efectiva de la puja
+- **WHEN** finaliza el intento de envío y confirmación de una puja en Modo Asalto y se obtiene la instantánea posterior del lote
+- **THEN** el orquestador registra la puja propia únicamente si la instantánea confirma que el usuario es líder o que la puja actual del mercado ha alcanzado al menos el importe enviado; en caso contrario, libera de inmediato el presupuesto reservado y no marca falsamente el lote como superado
 
 ### Requirement: Gestión del bucle de prórrogas de +90 segundos
 El sistema SHALL continuar monitorizando el lote tras cualquier extensión de tiempo (+90 segundos) provocada por pujas en el último minuto y contraatacar cuando otro postor supere la puja del usuario, siempre que el nuevo escalón mínimo no exceda el techo dinámico ni el presupuesto disponible.

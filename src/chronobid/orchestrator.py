@@ -232,7 +232,11 @@ class AuctionOrchestrator:
                     bid_amt = decision.bid_amount_eur
                     try:
                         post_snap = await controller.submit_minimum_bid(bid_amt)
-                        lot.record_own_bid(bid_amt, reserve_status=post_snap.reserve_status)
+                        bid_accepted = (
+                            post_snap.is_leader or post_snap.current_bid_eur >= bid_amt
+                        )
+                        if bid_accepted:
+                            lot.record_own_bid(bid_amt, reserve_status=post_snap.reserve_status)
                         lot.apply_market_snapshot(
                             current_bid_eur=post_snap.current_bid_eur,
                             next_min_bid_eur=post_snap.next_min_bid_eur,
@@ -243,8 +247,16 @@ class AuctionOrchestrator:
                             title=post_snap.title or lot.title,
                             closing_time=post_snap.closing_time or lot.closing_time,
                         )
-                        # Si tras pujar otro postor nos superó en el mismo milisegundo, liberar reserva
-                        if not lot.is_leader:
+                        if not bid_accepted:
+                            logger.warning(
+                                "Puja de %d € en %s no confirmada en Catawiki; liberando reserva.",
+                                bid_amt,
+                                lot.lot_id,
+                            )
+                            await self.ledger.release(lot.lot_id)
+                            lot.notes = f"Puja de {bid_amt} € no confirmada en Catawiki"
+                        elif not lot.is_leader:
+                            # Si tras pujar otro postor nos superó en el mismo milisegundo, liberar reserva
                             await self.ledger.release(lot.lot_id)
                     except Exception as exc:
                         logger.error("Error al enviar puja en %s: %s", lot.lot_id, exc)

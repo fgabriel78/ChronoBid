@@ -55,13 +55,28 @@ class CatawikiSelectors:
         'input[type="number"]',
     )
     bid_submit_selectors: tuple[str, ...] = (
+        '[data-sentry-component="BidInputRow"] button.c-button--secondary',
+        'form:has(input[name="bid"]) button.c-button--secondary',
+        '[data-sentry-component="BidInputRow"] button:has-text("Pujar")',
+        '[data-sentry-component="BidInputRow"] button:has-text("Place bid")',
         'button[data-testid="place-bid-button"]',
         'button[data-testid="bid-submit-button"]',
-        'button[type="submit"]',
+        'form:has(input[name="bid"]) button[type="submit"]',
     )
     bid_confirm_selectors: tuple[str, ...] = (
+        'article[role="dialog"][data-sentry-component="LotBidConfirmation"] button.c-button--primary',
+        'button[data-sentry-source-file*="LotBidConfirmation"].c-button--primary',
+        'article[role="dialog"] footer button.c-button--primary',
+        '[role="dialog"] button:has-text("Confirmar puja")',
+        '[role="dialog"] button:has-text("Confirm bid")',
         'button[data-testid="confirm-bid-button"]',
         'button[data-testid="modal-confirm-bid"]',
+    )
+    bid_cancel_selectors: tuple[str, ...] = (
+        'article[role="dialog"][data-sentry-component="LotBidConfirmation"] button.c-button--tertiary',
+        'button[data-sentry-source-file*="LotBidConfirmation"].c-button--tertiary',
+        '[role="dialog"] button:has-text("Cancelar")',
+        '[role="dialog"] button:has-text("Cancel")',
     )
     leader_phrases: tuple[str, ...] = (
         "eres el máximo pujador",
@@ -391,10 +406,14 @@ class CatawikiLotPage:
         *,
         selectors: CatawikiSelectors | None = None,
         confirmation_wait_seconds: float = 0.45,
+        confirm_appear_timeout_seconds: float = 2.5,
+        confirm_poll_interval_seconds: float = 0.05,
     ) -> None:
         self.page = page
         self.selectors = selectors or CatawikiSelectors()
         self.confirmation_wait_seconds = confirmation_wait_seconds
+        self.confirm_appear_timeout_seconds = confirm_appear_timeout_seconds
+        self.confirm_poll_interval_seconds = confirm_poll_interval_seconds
         self._last_network_snapshot: LotPageSnapshot | None = None
         self._listener_attached = False
 
@@ -536,9 +555,23 @@ class CatawikiLotPage:
         elif not is_closed and net is not None and not body_text:
             is_closed = net.is_closed
 
+        dom_has_no_bids = any(phrase in body_text for phrase in self.selectors.no_bids_phrases)
+        dom_is_leader = any(phrase in body_text for phrase in self.selectors.leader_phrases)
+        ssr_start_min = ssr_snap.next_min_bid_eur if ssr_snap is not None else 1
+        dom_shows_active_bids = bool(body_text) and not dom_has_no_bids and (
+            dom_is_leader
+            or (current_bid is not None and current_bid > 1)
+            or (next_min is not None and next_min > ssr_start_min)
+            or (
+                net is not None
+                and not net.extra.get("has_no_bids", False)
+                and net.current_bid_eur > 0
+            )
+        )
+
         # Detección de lotes en apertura inicial sin pujas
-        is_opening_lot = (
-            any(phrase in body_text for phrase in self.selectors.no_bids_phrases)
+        is_opening_lot = not dom_shows_active_bids and (
+            dom_has_no_bids
             or (ssr_snap is not None and ssr_snap.extra.get("has_no_bids", False))
             or (net is not None and net.extra.get("has_no_bids", False))
         )
@@ -601,7 +634,7 @@ class CatawikiLotPage:
                 else compute_catawiki_next_min_bid(cur_val)
             )
 
-        is_leader = any(phrase in body_text for phrase in self.selectors.leader_phrases)
+        is_leader = dom_is_leader
         if not is_leader and ssr_snap is not None and ssr_snap.is_leader:
             is_leader = True
         elif not is_leader and net is not None and not body_text:
@@ -650,10 +683,21 @@ class CatawikiLotPage:
     async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
         """
         Ejecuta una puja por el importe exacto `bid_amount_eur` en la interfaz de Catawiki,
-        confirma el diálogo si aparece y devuelve la nueva instantánea tras la actualización.
+        espera activamente la aparición del diálogo modal de confirmación (`LotBidConfirmation`),
+        pulsa el botón principal de confirmar y devuelve la nueva instantánea tras la actualización.
         """
         if bid_amount_eur <= 0:
             raise ValueError("El importe de puja debe ser mayor que 0 EUR.")
+
+        # 0. Si existiera un diálogo modal de confirmación previo colgado, cerrarlo antes de iniciar
+        for cancel_sel in self.selectors.bid_cancel_selectors:
+            try:
+                cancel_loc = self.page.locator(cancel_sel)
+                if await cancel_loc.count() > 0:
+                    await cancel_loc.first.click()
+                    break
+            except Exception:
+                continue
 
         # 1. Intentar botón de puja rápida si coincide exactamente con bid_amount_eur
         quick_clicked = False
@@ -674,7 +718,7 @@ class CatawikiLotPage:
         except Exception:
             quick_clicked = False
 
-        # 2. Si no hubo botón rápido exacto, rellenar campo de puja y pulsar enviar
+        # 2. Si no hubo botón rápido exacto, rellenar campo de puja y pulsar enviar (puja directa)
         if not quick_clicked:
             filled = False
             for input_sel in self.selectors.bid_input_selectors:
@@ -698,15 +742,26 @@ class CatawikiLotPage:
             if not submitted:
                 raise RuntimeError("No se encontró el botón de envío de puja en la página de Catawiki.")
 
-        # 3. Si Catawiki muestra botón de confirmación modal, pulsarlo
-        for confirm_sel in self.selectors.bid_confirm_selectors:
-            try:
-                conf_loc = self.page.locator(confirm_sel)
-                if await conf_loc.count() > 0:
-                    await conf_loc.first.click()
-                    break
-            except Exception:
-                continue
+        # 3. Esperar activamente a que aparezca el diálogo modal de confirmación y pulsar aceptar
+        confirmed = False
+        elapsed = 0.0
+        timeout = max(0.0, self.confirm_appear_timeout_seconds)
+        poll = max(0.01, self.confirm_poll_interval_seconds)
+
+        while True:
+            for confirm_sel in self.selectors.bid_confirm_selectors:
+                try:
+                    conf_loc = self.page.locator(confirm_sel)
+                    if await conf_loc.count() > 0:
+                        await conf_loc.first.click()
+                        confirmed = True
+                        break
+                except Exception:
+                    continue
+            if confirmed or elapsed >= timeout:
+                break
+            await asyncio.sleep(poll)
+            elapsed += poll
 
         if self.confirmation_wait_seconds > 0:
             await asyncio.sleep(self.confirmation_wait_seconds)

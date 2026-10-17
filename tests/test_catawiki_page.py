@@ -271,6 +271,15 @@ def test_catawiki_selectors_updated_definitions() -> None:
     assert '[data-testid="lot-bid-status-current-bid"]' in selectors.current_bid_selectors
     assert 'input[name="bid"]' in selectors.bid_input_selectors
     assert '[data-testid="quick-bid-buttons"] button' in selectors.next_min_bid_selectors
+    assert (
+        'article[role="dialog"][data-sentry-component="LotBidConfirmation"] button.c-button--primary'
+        in selectors.bid_confirm_selectors
+    )
+    assert '[role="dialog"] button:has-text("Confirmar puja")' in selectors.bid_confirm_selectors
+    assert (
+        '[data-sentry-component="BidInputRow"] button.c-button--secondary'
+        in selectors.bid_submit_selectors
+    )
 
 
 def test_parse_network_bidding_payload_native_catawiki() -> None:
@@ -281,7 +290,7 @@ def test_parse_network_bidding_payload_native_catawiki() -> None:
             "localizedMinBidAmount": 280,
             "reservePriceMet": False,
             "closed": False,
-            "biddingEndTime": 1792261655000,
+            "biddingEndTime": 1992261655000,
             "quickBids": [280, 300, 360],
             "live": {
                 "lot": {
@@ -326,7 +335,7 @@ class SimulatedNextDataAndDOMPage:
             "localizedMinBidAmount": self.next_data_min,
             "reservePriceMet": False,
             "closed": False,
-            "biddingEndTime": 1792261655000,
+            "biddingEndTime": 1992261655000,
         }
 
     def locator(self, selector: str) -> SimulatedLocator:
@@ -363,7 +372,11 @@ class SimulatedNextDataAndDOMPage:
 
 async def test_catawiki_hybrid_extraction_and_quick_bid() -> None:
     sim = SimulatedNextDataAndDOMPage(current_bid_dom=" € 260", next_data_bid=260, next_data_min=280)
-    lot_page = CatawikiLotPage(sim, confirmation_wait_seconds=0.0)
+    lot_page = CatawikiLotPage(
+        sim,
+        confirmation_wait_seconds=0.0,
+        confirm_appear_timeout_seconds=0.0,
+    )
 
     snap = await lot_page.extract_snapshot()
     assert snap.title == "Seiko Prospex Speedtimer SBDL091"
@@ -462,7 +475,7 @@ def test_starting_lot_extraction_network_payload() -> None:
         "localizedMinBidAmount": 1,
         "quickBids": [1, 2, 3],
         "biddingHistory": {"bids": []},
-        "biddingEndTime": 1792774276000,
+        "biddingEndTime": 1992774276000,
         "reservePriceMet": None,
     }
     snap = parse_network_bidding_payload(payload_starting)
@@ -484,7 +497,7 @@ async def test_duward_starting_lot_workflow_not_discarded() -> None:
                 "localizedMinBidAmount": 1,
                 "quickBids": [1, 2, 3],
                 "biddingHistory": {"bids": []},
-                "biddingEndTime": 1792774276000,
+                "biddingEndTime": 1992774276000,
                 "reservePriceMet": None,
                 "title": self.title,
             }
@@ -606,6 +619,160 @@ async def test_blank_page_without_auction_data_raises_load_error() -> None:
 
     with pytest.raises(CatawikiPageLoadError, match="No se encontraron elementos de subasta"):
         await lot_page.extract_snapshot()
+
+
+@pytest.mark.asyncio
+async def test_submit_minimum_bid_waits_for_async_lot_bid_confirmation_modal_and_bid_input_row() -> None:
+    """
+    Verifica que:
+      1. Al enviar una puja (tanto por botón rápido como por campo numérico en BidInputRow),
+         si el modal `LotBidConfirmation` tarda varias pasadas de sondeo en montarse en el DOM,
+         `submit_minimum_bid` espera activamente y pulsa `button.c-button--primary` ('Confirmar puja').
+      2. En puja por campo numérico, selecciona `[data-sentry-component="BidInputRow"] button.c-button--secondary`
+         ('Pujar') y nunca 'Fijar puja máx'.
+    """
+
+    class SimulatedAsyncModalPage:
+        def __init__(self) -> None:
+            self.title = "Duward - Automatic - Sin precio de reserva"
+            self.current_bid = 0
+            self.next_min_bid = 1
+            self.is_leader = False
+            self.pending_bid: int | None = None
+            self.modal_polls_remaining = 0
+            self.confirm_clicks = 0
+            self.direct_pujar_clicks = 0
+            self.filled_bid_str: str | None = None
+
+        async def evaluate(self, script: str) -> Any:
+            # __NEXT_DATA__ inicial estático en 0 € (sin pujas al abrir la pestaña)
+            return {
+                "biddingBlockResponse": {
+                    "title": self.title,
+                    "localizedCurrentBidAmount": 0,
+                    "localizedStartBidAmount": 1,
+                    "localizedMinBidAmount": 1,
+                    "quickBids": [1, 2, 3],
+                    "biddingHistory": {"bids": []},
+                    "biddingEndTime": 1992774276000,
+                    "reservePriceMet": None,
+                }
+            }
+
+        def _open_modal_after_delay(self, amount: int) -> None:
+            self.pending_bid = amount
+            # El modal no estará disponible en la primera consulta (0 ms), sino tras 2 ciclos de poll
+            self.modal_polls_remaining = 2
+
+        def _confirm_modal(self) -> None:
+            assert self.pending_bid is not None
+            self.confirm_clicks += 1
+            self.current_bid = self.pending_bid
+            self.next_min_bid = self.pending_bid + 1
+            self.is_leader = True
+            self.pending_bid = None
+
+        def locator(self, selector: str) -> SimulatedLocator:
+            if selector == '[data-testid="lot-title"]':
+                return SimulatedLocator([SimulatedElement(text=self.title)])
+            if selector == '[data-testid="lot-bid-status-current-bid"]':
+                shown = 1 if self.current_bid == 0 else self.current_bid
+                return SimulatedLocator([SimulatedElement(text=f" € {shown}")])
+            if selector == '[data-testid="quick-bid-buttons"] button':
+                return SimulatedLocator(
+                    [
+                        SimulatedElement(
+                            text=f"€ {self.next_min_bid}",
+                            on_click=lambda: self._open_modal_after_delay(self.next_min_bid),
+                        ),
+                    ]
+                )
+            if selector == 'input[name="bid"]':
+                return SimulatedLocator(
+                    [
+                        SimulatedElement(
+                            attrs={"value": ""},
+                            on_fill=lambda val: setattr(self, "filled_bid_str", val),
+                        )
+                    ]
+                )
+            if selector == '[data-sentry-component="BidInputRow"] button.c-button--secondary':
+                return SimulatedLocator(
+                    [
+                        SimulatedElement(
+                            text="Pujar",
+                            on_click=lambda: (
+                                setattr(self, "direct_pujar_clicks", self.direct_pujar_clicks + 1),
+                                self._open_modal_after_delay(int(self.filled_bid_str or "0")),
+                            ),
+                        )
+                    ]
+                )
+            if (
+                selector
+                == 'article[role="dialog"][data-sentry-component="LotBidConfirmation"] button.c-button--primary'
+            ):
+                if self.pending_bid is not None:
+                    if self.modal_polls_remaining > 0:
+                        self.modal_polls_remaining -= 1
+                        return SimulatedLocator([])
+                    return SimulatedLocator(
+                        [
+                            SimulatedElement(
+                                text="Confirmar puja",
+                                on_click=self._confirm_modal,
+                            )
+                        ]
+                    )
+                return SimulatedLocator([])
+            if selector == "body":
+                if self.is_leader:
+                    return SimulatedLocator(
+                        [
+                            SimulatedElement(
+                                text=f"{self.title} PUJA ACTUAL € {self.current_bid} Eres el máximo pujador"
+                            )
+                        ]
+                    )
+                return SimulatedLocator(
+                    [
+                        SimulatedElement(
+                            text=f"{self.title} EMPEZAR A PUJAR € 1 Sin precio de reserva No hay ninguna puja"
+                        )
+                    ]
+                )
+            return SimulatedLocator([])
+
+    sim = SimulatedAsyncModalPage()
+    lot_page = CatawikiLotPage(
+        sim,
+        confirmation_wait_seconds=0.0,
+        confirm_appear_timeout_seconds=0.5,
+        confirm_poll_interval_seconds=0.01,
+    )
+
+    # 1. Estado inicial antes de pujar: lote de apertura en 0 € con mínimo 1 €
+    snap0 = await lot_page.extract_snapshot()
+    assert snap0.current_bid_eur == 0
+    assert snap0.next_min_bid_eur == 1
+    assert snap0.is_leader is False
+
+    # 2. Pujar 1 € mediante botón rápido -> espera a que aparezca LotBidConfirmation y pulsa Confirmar puja
+    # Además verifica que tras confirmar, aunque __NEXT_DATA__ siga en 0 €, el DOM en vivo manda (1 € y líder)
+    snap1 = await lot_page.submit_minimum_bid(1)
+    assert sim.confirm_clicks == 1
+    assert snap1.is_leader is True
+    assert snap1.current_bid_eur == 1
+    assert snap1.next_min_bid_eur == 2
+
+    # 3. Pujar 5 € (no coincide con el botón rápido de 2 €) -> usa input[name="bid"] + BidInputRow c-button--secondary
+    snap2 = await lot_page.submit_minimum_bid(5)
+    assert sim.direct_pujar_clicks == 1
+    assert sim.confirm_clicks == 2
+    assert snap2.is_leader is True
+    assert snap2.current_bid_eur == 5
+    assert snap2.next_min_bid_eur == 6
+
 
 
 

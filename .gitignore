@@ -21,4 +21,5 @@ htmlcov/
 # Archivos temporales de Excel
 *.xlsx.tmp
 ~$*.xlsx
+.~lock.*#
 relojes.xlsx
