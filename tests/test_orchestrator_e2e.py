@@ -308,3 +308,94 @@ async def test_orchestrator_patrol_handles_transient_error_without_losing_lot(tm
     assert lot.next_min_bid_eur == 260
     assert lot.title == "Seiko - Presage - SPB045J1"
 
+
+@pytest.mark.asyncio
+async def test_orchestrator_patrol_syncs_and_releases_leader_commitment_in_ledger_and_excel(
+    tmp_path: Path,
+) -> None:
+    excel_path = tmp_path / "cartera_lider_patrulla.xlsx"
+    url = "https://www.catawiki.com/es/l/13000013-citizen-automatic"
+    create_excel_template(excel_path, default_budget_eur=1500, sample_rows=[(url, 200)])
+
+    step = 0
+
+    class PatrolLeaderController:
+        async def extract_snapshot(self) -> LotPageSnapshot:
+            nonlocal step
+            step += 1
+            if step == 1:
+                # Ronda 1 de Patrulla: el usuario ya es líder por 1 € (faltan 594459s)
+                return LotPageSnapshot(
+                    title="Citizen Automatic",
+                    current_bid_eur=1,
+                    next_min_bid_eur=2,
+                    seconds_remaining=594459.0,
+                    is_leader=True,
+                    reserve_status=ReserveStatus.NO_RESERVE,
+                    is_closed=False,
+                )
+            # Ronda 2 de Patrulla: otro postor supera la puja a 5 € durante la patrulla
+            return LotPageSnapshot(
+                title="Citizen Automatic",
+                current_bid_eur=5,
+                next_min_bid_eur=6,
+                seconds_remaining=590000.0,
+                is_leader=False,
+                reserve_status=ReserveStatus.NO_RESERVE,
+                is_closed=False,
+            )
+
+        async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
+            raise NotImplementedError
+
+        async def close(self) -> None:
+            pass
+
+    async def controller_factory(lot: WatchLot) -> PatrolLeaderController:
+        return PatrolLeaderController()
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        controller_factory=controller_factory,
+        excel_retry_seconds=0.01,
+    )
+
+    lot = orchestrator.lots[0]
+
+    # Ronda 1: debe detectar LIDER (1 €) y reflejar 1 € en Comprometido y 1499 € en Disponible
+    await orchestrator.run_patrol_step()
+    await orchestrator.sync_worker.flush_once()
+
+    assert lot.status == AuctionStatus.LEADER
+    assert lot.my_last_bid_eur == 1
+    assert lot.current_bid_eur == 1
+    assert lot.effective_ceiling_eur == 200
+    assert orchestrator.ledger.committed_leader_eur == 1
+    assert orchestrator.ledger.available_eur == 1499
+
+    wb = load_workbook(excel_path, data_only=True)
+    ws = wb.active
+    assert ws is not None
+    assert ws["B3"].value == 1
+    assert ws["B4"].value == 1499
+    assert ws["E7"].value == "LIDER"
+    assert ws["F7"].value == 1
+    wb.close()
+
+    # Ronda 2: otro postor supera la puja en patrulla -> debe liberar el 1 € al instante
+    await orchestrator.run_patrol_step()
+    await orchestrator.sync_worker.flush_once()
+
+    assert lot.status == AuctionStatus.OUTBID
+    assert orchestrator.ledger.committed_leader_eur == 0
+    assert orchestrator.ledger.available_eur == 1500
+
+    wb2 = load_workbook(excel_path, data_only=True)
+    ws2 = wb2.active
+    assert ws2 is not None
+    assert ws2["B3"].value == 0
+    assert ws2["B4"].value == 1500
+    assert ws2["E7"].value == "SUPERADO"
+    wb2.close()
+
+

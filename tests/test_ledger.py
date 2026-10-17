@@ -96,3 +96,34 @@ async def test_ledger_update_global_budget_validation() -> None:
 
     with pytest.raises(ValueError, match="menor que la suma"):
         await ledger.update_global_budget(200)
+
+
+async def test_ledger_sync_leader_commitment_manual_bid_and_release() -> None:
+    ledger = BudgetLedger(global_budget_eur=1500)
+
+    # Sincronización de puja manual previa de 1 € detectada en Modo Patrulla
+    synced = await ledger.sync_leader_commitment("lot-13", 1)
+    assert synced == 1
+    assert ledger.committed_leader_eur == 1
+    assert ledger.available_eur == 1499
+    assert ledger.max_purchasing_power_for_lot("lot-13") == 1500
+
+    # Actualización del compromiso en el mismo lote a 25 €
+    synced_up = await ledger.sync_leader_commitment("lot-13", 25)
+    assert synced_up == 25
+    assert ledger.committed_leader_eur == 25
+    assert ledger.available_eur == 1475
+
+    # Si otra puja manual externa excediera el saldo libre restante, se acota sin romper invariante
+    synced_capped = await ledger.sync_leader_commitment("lot-99", 2000)
+    assert synced_capped == 1475
+    snap = ledger.snapshot()
+    assert snap.committed_leader_eur == 1500
+    assert snap.available_eur == 0
+
+    # Liberación con importe 0 o mediante release()
+    assert await ledger.sync_leader_commitment("lot-99", 0) == 0
+    assert await ledger.release("lot-13") == 25
+    assert ledger.committed_leader_eur == 0
+    assert ledger.available_eur == 1500
+

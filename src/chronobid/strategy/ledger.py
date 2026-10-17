@@ -113,6 +113,34 @@ class BudgetLedger:
         async with self._lock:
             return self._committed_lots.pop(lot_id, 0)
 
+    async def sync_leader_commitment(self, lot_id: str, committed_amount_eur: int) -> int:
+        """
+        Sincroniza de forma atómica el importe real comprometido en `lot_id` cuando
+        una lectura de mercado confirma que el usuario es actualmente el líder provisional.
+
+        - Si `committed_amount_eur <= 0`, libera cualquier compromiso previo del lote.
+        - Si el lote ya consta como ganado en firme, no altera `_committed_lots`.
+        - Acota el compromiso al máximo saldo disponible para preservar siempre
+          el invariante `spent_eur + committed_leader_eur <= global_budget_eur`.
+        - Devuelve el importe que queda efectivamente registrado como comprometido.
+        """
+        async with self._lock:
+            if lot_id in self._won_lots:
+                return 0
+            if committed_amount_eur <= 0:
+                self._committed_lots.pop(lot_id, None)
+                return 0
+
+            prev_committed = self._committed_lots.get(lot_id, 0)
+            max_allowable = prev_committed + self.available_eur
+            effective_committed = min(committed_amount_eur, max_allowable)
+            if effective_committed <= 0:
+                self._committed_lots.pop(lot_id, None)
+                return 0
+
+            self._committed_lots[lot_id] = effective_committed
+            return effective_committed
+
     async def confirm_won(self, lot_id: str, final_amount_eur: int | None = None) -> int:
         """
         Convierte el compromiso provisional de `lot_id` en gasto en firme tras ganar la subasta.

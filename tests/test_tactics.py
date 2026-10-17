@@ -159,3 +159,30 @@ async def test_process_tick_and_decide_releases_and_reserves_atomically() -> Non
     # El saldo comprometido de 220 € ha debido liberarse automáticamente
     assert ledger.committed_leader_eur == 0
     assert ledger.available_eur == 500
+
+
+async def test_process_tick_and_decide_syncs_preexisting_leader_commitment() -> None:
+    ledger = BudgetLedger(global_budget_eur=1500)
+    optimizer = PortfolioOptimizer()
+    engine = TacticalBiddingEngine(snipe_window_seconds=25.0)
+
+    lot = WatchLot(
+        lot_id="lot-13",
+        url="https://www.catawiki.com/es/l/1313-orient",
+        max_bid_eur=200,
+    )
+    lot.apply_market_snapshot(
+        current_bid_eur=1,
+        next_min_bid_eur=2,
+        seconds_remaining=594459.0,
+        is_leader=True,
+        reserve_status=ReserveStatus.NO_RESERVE,
+    )
+
+    decision = await engine.process_tick_and_decide(lot, [lot], ledger, optimizer)
+    assert decision.should_bid is False
+    assert lot.status == AuctionStatus.LEADER
+    assert lot.my_last_bid_eur == 1
+    assert ledger.committed_leader_eur == 1
+    assert ledger.available_eur == 1499
+

@@ -172,24 +172,20 @@ class TacticalBiddingEngine:
             dynamic_ceiling_eur=effective_ceiling,
         )
 
-    async def process_tick_and_decide(
+    async def reconcile_lot_with_ledger(
         self,
         lot: WatchLot,
-        all_lots: Iterable[WatchLot],
         ledger: BudgetLedger,
-        optimizer: PortfolioOptimizer,
-    ) -> BidDecision:
+    ) -> None:
         """
-        Procesa un tick completo de Modo Asalto para `lot`:
-          1. Si el lote ha cerrado, consolida GANADO o libera saldo si no fue adjudicado.
-          2. Si el usuario tenía saldo comprometido pero ha sido superado, lo libera al instante.
-          3. Calcula el Techo Dinámico E_i con `PortfolioOptimizer`.
-          4. Evalúa la decisión táctica; si procede pujar, intenta reservar el saldo
-             atómico en `BudgetLedger` antes de autorizar el envío de la puja.
+        Reconcilia de forma atómica el estado contable de `lot` en `BudgetLedger`
+        tras aplicar un snapshot de mercado (tanto en Modo Patrulla como en Modo Asalto):
+          - Si el lote cerró como GANADO, consolida el gasto en firme.
+          - Si el lote cerró sin ganarse o quedó en estado terminal, libera cualquier compromiso.
+          - Si el lote sigue abierto y `lot.is_leader` es True, sincroniza `lot.current_bid_eur`
+            como saldo comprometido de líder.
+          - Si el lote sigue abierto y `lot.is_leader` es False, libera cualquier compromiso previo.
         """
-        all_lots_list = list(all_lots)
-
-        # 1. ¿Lote cerrado?
         if lot.is_closed or lot.status.is_terminal:
             if lot.status == AuctionStatus.WON:
                 if ledger.get_won(lot.lot_id) == 0:
@@ -213,15 +209,39 @@ class TacticalBiddingEngine:
                 ):
                     lot.status = AuctionStatus.LOST_NO_BUDGET
                     lot.notes = "Subasta cerrada sin presupuesto/techo disponible suficiente"
+            return
+
+        if lot.is_leader:
+            await ledger.sync_leader_commitment(lot.lot_id, lot.current_bid_eur)
+        elif ledger.get_committed(lot.lot_id) > 0:
+            await ledger.release(lot.lot_id)
+
+    async def process_tick_and_decide(
+        self,
+        lot: WatchLot,
+        all_lots: Iterable[WatchLot],
+        ledger: BudgetLedger,
+        optimizer: PortfolioOptimizer,
+    ) -> BidDecision:
+        """
+        Procesa un tick completo de Modo Asalto para `lot`:
+          1. Si el lote ha cerrado, consolida GANADO o libera saldo si no fue adjudicado.
+          2. Sincroniza el compromiso si el usuario es líder o lo libera al instante si fue superado.
+          3. Calcula el Techo Dinámico E_i con `PortfolioOptimizer`.
+          4. Evalúa la decisión táctica; si procede pujar, intenta reservar el saldo
+             atómico en `BudgetLedger` antes de autorizar el envío de la puja.
+        """
+        all_lots_list = list(all_lots)
+
+        # 1 y 2. Reconciliar estado de cierre o liderazgo actual con BudgetLedger
+        await self.reconcile_lot_with_ledger(lot, ledger)
+
+        if lot.is_closed or lot.status.is_terminal:
             return BidDecision(
                 should_bid=False,
                 reason="Subasta finalizada",
                 dynamic_ceiling_eur=lot.dynamic_ceiling_eur,
             )
-
-        # 2. ¿Nos han superado siendo antes líderes? -> Liberación inmediata en Ledger
-        if not lot.is_leader and ledger.get_committed(lot.lot_id) > 0:
-            await ledger.release(lot.lot_id)
 
         # 3. Calcular Techo Dinámico E_i
         ceiling = optimizer.compute_dynamic_ceiling(lot, all_lots_list, ledger)

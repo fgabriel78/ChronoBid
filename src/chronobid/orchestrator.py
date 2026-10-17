@@ -163,11 +163,10 @@ class AuctionOrchestrator:
             finally:
                 await controller.close()
 
-            # Si el lote ha cerrado durante la patrulla, consolidar en Ledger
+            # Reconciliar estado del lote (cierre, liderazgo o superación) en BudgetLedger
+            await self.tactics.reconcile_lot_with_ledger(lot, self.ledger)
+
             if lot.is_closed or lot.status.is_terminal:
-                await self.tactics.process_tick_and_decide(
-                    lot, self.lots, self.ledger, self.optimizer
-                )
                 self._emit_and_enqueue()
                 continue
 
