@@ -18,7 +18,7 @@ El sistema SHALL conectarse a una instancia de navegador ya abierta y autenticad
 - **THEN** el sistema notifica claramente el requisito de conexión/autenticación y detiene el envío de pujas hasta que se restablezca
 
 ### Requirement: Operación diferenciada en Modo Patrulla y Modo Asalto
-El sistema SHALL monitorizar los relojes con cierre lejano (> 5 minutos) mediante consultas periódicas espaciadas (Modo Patrulla) y conmutar a seguimiento continuo en tiempo real (Modo Asalto) cuando falten menos de 5 minutos para el cierre de un reloj viable.
+El sistema SHALL monitorizar los relojes con cierre lejano (> 5 minutos) mediante consultas periódicas espaciadas (Modo Patrulla) y conmutar a seguimiento continuo en tiempo real (Modo Asalto) cuando falten menos de 5 minutos para el cierre de un reloj viable, garantizando la independencia estricta de sus ritmos de consulta.
 
 #### Scenario: Transición de Modo Patrulla a Modo Asalto
 - **WHEN** un reloj viable entra en los últimos 5 minutos previos a su hora de cierre
@@ -35,6 +35,14 @@ El sistema SHALL monitorizar los relojes con cierre lejano (> 5 minutos) mediant
 #### Scenario: Tolerancia a fallo puntual durante la ronda de patrulla
 - **WHEN** la consulta a un lote durante la patrulla devuelve una lectura de error temporal de red o plataforma
 - **THEN** el orquestador mantiene el lote en su estado activo, no propaga valores vacíos o cerrados al modelo y reintenta la lectura en la siguiente ronda de patrulla
+
+#### Scenario: Independencia de cadencia en Modo Patrulla durante Modo Asalto concurrente
+- **WHEN** uno o más relojes viables se encuentran en seguimiento continuo de Modo Asalto y existen otros relojes viables con cierre superior a 5 minutos
+- **THEN** el sistema mantiene la monitorización de los relojes en Modo Patrulla con consultas espaciadas según el intervalo de patrulla configurado, sin acelerar las consultas ni recargar continuamente las pestañas de patrulla debido a los asaltos concurrentes
+
+#### Scenario: Suspensión de consultas de patrulla cuando todos los lotes activos están en asalto
+- **WHEN** todos los relojes viables activos se encuentran ya en Modo Asalto con seguimiento dedicado
+- **THEN** el sistema suspende las rondas de patrulla y aguarda pasivamente la resolución de las tareas de asalto sin realizar esperas activas de alta frecuencia ni consultas redundantes de mercado
 
 ### Requirement: Resiliencia ante errores transitorios de carga en Catawiki
 El sistema SHALL detectar páginas de error transitorio de Catawiki, respuestas de fallo de plataforma o ausencia de contenedores de subasta, catalogándolas como incidencias temporales sin sobreescribir el título del lote ni forzar el temporizador a cero.

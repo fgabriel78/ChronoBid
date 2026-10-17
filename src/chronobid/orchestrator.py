@@ -118,6 +118,35 @@ class AuctionOrchestrator:
         """Devuelve True mientras quede al menos un lote no terminal."""
         return any(lot.status.is_active and not lot.is_closed for lot in self.lots)
 
+    def _get_pending_patrol_lots(self) -> list[WatchLot]:
+        """Devuelve los lotes activos que aún requieren monitorización en Modo Patrulla."""
+        return [
+            lot
+            for lot in self.lots
+            if lot.status.is_active
+            and not lot.is_closed
+            and not (lot.lot_id in self._assault_tasks and not self._assault_tasks[lot.lot_id].done())
+        ]
+
+    def _calculate_patrol_wait_seconds(self, pending_lots: list[WatchLot] | None = None) -> float:
+        """
+        Calcula el tiempo de espera hasta la siguiente ronda de patrulla.
+        Si algún lote viable está a punto de entrar en Modo Asalto (< patrol_interval_seconds),
+        ajusta dinámicamente el tiempo para conmutar con precisión al umbral de 300 segundos.
+        """
+        wait_seconds = self.patrol_interval_seconds
+        lots_to_check = pending_lots if pending_lots is not None else self._get_pending_patrol_lots()
+        for lot in lots_to_check:
+            if (
+                lot.is_viable
+                and lot.seconds_remaining is not None
+                and lot.seconds_remaining > self.assault_threshold_seconds
+            ):
+                time_to_assault = lot.seconds_remaining - self.assault_threshold_seconds
+                if 0 < time_to_assault < wait_seconds:
+                    wait_seconds = max(0.5, time_to_assault)
+        return wait_seconds
+
     async def run_patrol_step(self) -> None:
         """
         Ejecuta una pasada de Modo Patrulla sobre los lotes activos que aún no están
@@ -296,13 +325,41 @@ class AuctionOrchestrator:
                 self.has_active_lots()
                 or any(not t.done() for t in self._assault_tasks.values())
             ):
-                await self.run_patrol_step()
+                pending_patrol = self._get_pending_patrol_lots()
+                if pending_patrol:
+                    await self.run_patrol_step()
 
-                # Si todos los lotes activos ya están en tareas de asalto, esperar un tick breve
-                if any(not t.done() for t in self._assault_tasks.values()):
-                    await asyncio.sleep(min(self.patrol_interval_seconds, 0.05))
+                active_assault_tasks = [
+                    t for t in self._assault_tasks.values() if not t.done()
+                ]
+                pending_after_patrol = self._get_pending_patrol_lots()
+
+                if pending_after_patrol:
+                    # Quedan lotes en patrulla: esperar el intervalo de patrulla (con anticipación si procede)
+                    wait_time = self._calculate_patrol_wait_seconds(pending_after_patrol)
+                    try:
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=wait_time)
+                    except asyncio.TimeoutError:
+                        pass
+                elif active_assault_tasks:
+                    # Todos los lotes activos están en tareas de asalto: esperar pasivamente a que alguna termine
+                    # o que se solicite la parada, sin busy-wait de 50ms
+                    try:
+                        await asyncio.wait(
+                            active_assault_tasks,
+                            timeout=min(self.patrol_interval_seconds, 0.5),
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
                 elif self.has_active_lots():
-                    await asyncio.sleep(self.patrol_interval_seconds)
+                    try:
+                        await asyncio.wait_for(
+                            self._stop_event.wait(),
+                            timeout=self.patrol_interval_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
 
             if self._assault_tasks:
                 await asyncio.gather(*self._assault_tasks.values(), return_exceptions=True)

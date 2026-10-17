@@ -1,5 +1,6 @@
 """Simulación End-to-End de AuctionOrchestrator con múltiples subastas solapadas, +90s y reserva."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -523,3 +524,128 @@ async def test_orchestrator_unconfirmed_bid_releases_budget_without_false_outbid
     assert lot.current_bid_eur == 1
     assert lot.status == AuctionStatus.WON
     assert orchestrator.ledger.spent_eur == 1
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_patrol_interval_independent_from_concurrent_assault(tmp_path: Path) -> None:
+    """
+    Verifica que la existencia de un lote en seguimiento continuo de Modo Asalto
+    no acelera las consultas de los lotes en Modo Patrulla, manteniéndolas en su
+    intervalo espaciado independiente.
+    """
+    excel_path = tmp_path / "cartera_mixta.xlsx"
+    url_assault = "https://www.catawiki.com/es/l/900010-reloj-asalto"
+    url_patrol = "https://www.catawiki.com/es/l/900020-reloj-patrulla"
+
+    create_excel_template(
+        excel_path,
+        default_budget_eur=1000,
+        sample_rows=[
+            (url_assault, 300),
+            (url_patrol, 400),
+        ],
+    )
+
+    patrol_query_count = 0
+    assault_query_count = 0
+
+    class DualRoomController:
+        def __init__(self, is_assault: bool) -> None:
+            self.is_assault = is_assault
+            self.ticks = 0
+
+        async def extract_snapshot(self) -> LotPageSnapshot:
+            nonlocal patrol_query_count, assault_query_count
+            self.ticks += 1
+            if self.is_assault:
+                assault_query_count += 1
+                is_closed = self.ticks >= 6
+                return LotPageSnapshot(
+                    title="Reloj Asalto",
+                    current_bid_eur=100,
+                    next_min_bid_eur=110,
+                    seconds_remaining=0.0 if is_closed else 15.0,
+                    is_leader=True,
+                    reserve_status=ReserveStatus.NO_RESERVE,
+                    is_closed=is_closed,
+                )
+            else:
+                patrol_query_count += 1
+                return LotPageSnapshot(
+                    title="Reloj Patrulla",
+                    current_bid_eur=200,
+                    next_min_bid_eur=220,
+                    seconds_remaining=3600.0,
+                    is_leader=False,
+                    reserve_status=ReserveStatus.NO_RESERVE,
+                    is_closed=False,
+                )
+
+        async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
+            return await self.extract_snapshot()
+
+        async def close(self) -> None:
+            pass
+
+    async def controller_factory(lot: WatchLot) -> DualRoomController:
+        is_assault = "reloj-asalto" in lot.url
+        return DualRoomController(is_assault)
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        controller_factory=controller_factory,
+        assault_threshold_seconds=300.0,
+        patrol_interval_seconds=1.0,  # 1.0s para patrulla
+        assault_tick_seconds=0.01,    # 10 ms para asalto
+        snipe_window_seconds=25.0,
+        excel_retry_seconds=0.01,
+    )
+
+    run_task = asyncio.create_task(orchestrator.run_until_complete())
+
+    lot_assault, lot_patrol = orchestrator.lots
+    for _ in range(50):
+        if lot_assault.is_closed or not lot_assault.status.is_active:
+            break
+        await asyncio.sleep(0.02)
+
+    orchestrator.request_stop()
+    await run_task
+
+    # Verificaciones:
+    # 1. El reloj en asalto se consultó varias veces a alta frecuencia y finalizó ganado
+    assert assault_query_count >= 5
+    assert lot_assault.status == AuctionStatus.WON
+
+    # 2. El reloj en patrulla solo se consultó 1 vez en la ronda inicial, no en bucle continuo
+    assert patrol_query_count == 1
+    assert lot_patrol.status == AuctionStatus.PATROL
+
+
+def test_orchestrator_calculate_patrol_wait_seconds_adaptive(tmp_path: Path) -> None:
+    """
+    Verifica que _calculate_patrol_wait_seconds() se adapta al tiempo restante
+    hacia el umbral de 300s cuando algún lote está próximo a conmutar a asalto.
+    """
+    excel_path = tmp_path / "cartera_wait.xlsx"
+    url1 = "https://www.catawiki.com/es/l/900001-near-assault"
+    url2 = "https://www.catawiki.com/es/l/900002-far-patrol"
+    create_excel_template(excel_path, default_budget_eur=1000, sample_rows=[(url1, 200), (url2, 300)])
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        assault_threshold_seconds=300.0,
+        patrol_interval_seconds=15.0,
+    )
+    lot1, lot2 = orchestrator.lots
+    lot1.seconds_remaining = 304.0  # 4 segundos antes de entrar en asalto (300s)
+    lot2.seconds_remaining = 1800.0
+
+    wait = orchestrator._calculate_patrol_wait_seconds()
+    assert wait == 4.0
+
+    # Si todos los relojes están lejos (> 15s del umbral), espera los 15s estándar
+    lot1.seconds_remaining = 500.0
+    wait_far = orchestrator._calculate_patrol_wait_seconds()
+    assert wait_far == 15.0
+
