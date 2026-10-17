@@ -20,14 +20,18 @@ class CatawikiSelectors:
         "h1",
     )
     current_bid_selectors: tuple[str, ...] = (
+        '[data-testid="lot-bid-status-current-bid"]',
+        '[data-testid="lot-bid-status-box"] [data-testid="lot-bid-status-current-bid"]',
         '[data-testid="current-bid-amount"]',
         '[data-testid="lot-bid-status-section"] [data-testid="amount"]',
         '[data-testid="bid-amount"]',
         ".be-lot-bid-status__amount",
     )
     next_min_bid_selectors: tuple[str, ...] = (
+        '[data-testid="quick-bid-buttons"] button',
         '[data-testid="next-minimum-bid"]',
         '[data-testid="quick-bid-button"]',
+        'input[name="bid"]',
         'input[data-testid="bid-input"]',
         'input[name="bid_amount"]',
     )
@@ -37,6 +41,7 @@ class CatawikiSelectors:
         "time[datetime]",
     )
     bid_input_selectors: tuple[str, ...] = (
+        'input[name="bid"]',
         'input[data-testid="bid-input"]',
         'input[name="bid_amount"]',
         'input[type="number"]',
@@ -71,6 +76,18 @@ class CatawikiSelectors:
         "reserve price met",
         "reserve price has been met",
     )
+    no_reserve_phrases: tuple[str, ...] = (
+        "sin precio de reserva",
+        "sin reserva",
+        "no reserve price",
+        "no reserve",
+    )
+    no_bids_phrases: tuple[str, ...] = (
+        "no hay ninguna puja",
+        "empezar a pujar",
+        "no bids yet",
+        "start bidding",
+    )
     closed_phrases: tuple[str, ...] = (
         "subasta cerrada",
         "lote cerrado",
@@ -100,21 +117,31 @@ class LotPageSnapshot:
 def compute_catawiki_next_min_bid(current_bid_eur: int) -> int:
     """
     Calcula el siguiente escalón mínimo estándar de Catawiki en euros
-    cuando la página sólo informa la puja actual.
+    conforme a la tabla oficial de tramos de incremento de la plataforma.
     """
     if current_bid_eur <= 0:
         return 1
-    if current_bid_eur < 50:
+    if current_bid_eur <= 10:
+        return current_bid_eur + 1
+    if current_bid_eur <= 100:
         return current_bid_eur + 5
-    if current_bid_eur < 200:
+    if current_bid_eur <= 200:
         return current_bid_eur + 10
-    if current_bid_eur < 500:
+    if current_bid_eur <= 500:
         return current_bid_eur + 20
-    if current_bid_eur < 1000:
+    if current_bid_eur <= 1000:
         return current_bid_eur + 50
-    if current_bid_eur < 2000:
+    if current_bid_eur <= 2000:
         return current_bid_eur + 100
-    return current_bid_eur + 200
+    if current_bid_eur <= 5000:
+        return current_bid_eur + 200
+    if current_bid_eur <= 10000:
+        return current_bid_eur + 500
+    if current_bid_eur <= 20000:
+        return current_bid_eur + 1000
+    if current_bid_eur <= 50000:
+        return current_bid_eur + 2000
+    return current_bid_eur + 5000
 
 
 def parse_euro_amount(text: str | int | float | None) -> int | None:
@@ -191,64 +218,143 @@ def parse_countdown_seconds(text: str | int | float | None) -> float | None:
 def parse_network_bidding_payload(payload: dict[str, Any]) -> LotPageSnapshot | None:
     """
     Extrae un LotPageSnapshot desde un payload JSON de red de Catawiki
-    (o anidado bajo 'bidding_block' / 'lot' / 'data').
+    (o anidado bajo 'biddingBlockResponse' / 'bidding_block' / 'lot' / 'data').
     """
     if not isinstance(payload, dict):
         return None
 
     root: dict[str, Any] = payload
-    for key in ("bidding_block", "lot", "data"):
+    for key in ("biddingBlockResponse", "bidding_block", "lot", "data"):
         if isinstance(root.get(key), dict):
             root = root[key]
 
+    live_lot_bid = None
+    if isinstance(root.get("live"), dict):
+        lot_obj = root["live"].get("lot", {})
+        if isinstance(lot_obj, dict):
+            bid_dict = lot_obj.get("bid", {})
+            if isinstance(bid_dict, dict):
+                live_lot_bid = bid_dict.get("EUR") or bid_dict.get("eur")
+
     cur_bid = parse_euro_amount(
-        root.get("current_bid_amount")
+        root.get("localizedCurrentBidAmount")
+        or live_lot_bid
+        or root.get("current_bid_amount")
         or root.get("current_bid")
         or root.get("highest_bid_amount")
     )
+    first_quick_bid = None
+    if isinstance(root.get("quickBids"), list) and root["quickBids"]:
+        first_quick_bid = root["quickBids"][0]
+
     next_min = parse_euro_amount(
-        root.get("next_minimum_bid")
+        root.get("localizedMinBidAmount")
+        or root.get("localizedStartBidAmount")
+        or first_quick_bid
+        or root.get("next_minimum_bid")
         or root.get("next_min_bid")
         or root.get("minimum_bid_amount")
     )
-    seconds_rem = parse_countdown_seconds(
-        root.get("seconds_remaining")
-        or root.get("time_remaining")
-        or root.get("remaining_seconds")
-    )
+
+    seconds_rem: float | None = None
+    if "biddingEndTime" in root and isinstance(root["biddingEndTime"], (int, float)):
+        end_ms = float(root["biddingEndTime"])
+        now_ms = datetime.now(timezone.utc).timestamp() * 1000.0
+        seconds_rem = max(0.0, (end_ms - now_ms) / 1000.0)
+    elif isinstance(root.get("live"), dict) and "lot" in root["live"]:
+        live_lot = root["live"]["lot"]
+        if isinstance(live_lot, dict) and "biddingEndTime" in live_lot:
+            end_ms = float(live_lot["biddingEndTime"])
+            now_ms = datetime.now(timezone.utc).timestamp() * 1000.0
+            seconds_rem = max(0.0, (end_ms - now_ms) / 1000.0)
+
+    if seconds_rem is None:
+        seconds_rem = parse_countdown_seconds(
+            root.get("seconds_remaining")
+            or root.get("time_remaining")
+            or root.get("remaining_seconds")
+        )
 
     if cur_bid is None and next_min is None and seconds_rem is None:
         return None
 
-    cur_val = cur_bid if cur_bid is not None else 0
-    next_val = next_min if (next_min is not None and next_min > 0) else compute_catawiki_next_min_bid(cur_val)
+    # Detección de lotes en apertura inicial (sin pujas registradas aún)
+    has_bids = True
+    bids_list = (
+        root.get("biddingHistory", {}).get("bids")
+        if isinstance(root.get("biddingHistory"), dict)
+        else None
+    )
+    if bids_list is not None and len(bids_list) == 0:
+        has_bids = False
+    elif root.get("localizedCurrentBidAmount") == 0 and (cur_bid == 0 or cur_bid is None):
+        has_bids = False
+
+    if not has_bids:
+        cur_val = 0
+        next_val = next_min if (next_min is not None and next_min > 0) else 1
+    else:
+        cur_val = cur_bid if cur_bid is not None else 0
+        next_val = (
+            next_min
+            if (next_min is not None and next_min > 0)
+            else compute_catawiki_next_min_bid(cur_val)
+        )
     sec_val = seconds_rem if seconds_rem is not None else 0.0
 
     is_leader = bool(
         root.get("is_highest_bidder")
         or root.get("is_leader")
         or root.get("user_is_highest_bidder")
+        or (root.get("isABidder") and root.get("isWinner"))
     )
     is_closed = bool(root.get("is_closed") or root.get("closed") or root.get("bidding_closed"))
 
-    if "reserve_price_met" in root:
-        reserve_status = (
-            ReserveStatus.MET if bool(root["reserve_price_met"]) else ReserveStatus.NOT_MET
-        )
-    elif "has_reserve_price" in root and not root["has_reserve_price"]:
+    title_str = str(root.get("title", "")).lower()
+    has_reserve = (
+        root.get("hasReservePrice")
+        if "hasReservePrice" in root
+        else root.get("has_reserve_price")
+    )
+    reserve_met = (
+        root.get("reservePriceMet")
+        if "reservePriceMet" in root
+        else root.get("reserve_price_met")
+    )
+
+    if (
+        "sin precio de reserva" in title_str
+        or "no reserve price" in title_str
+        or "sin reserva" in title_str
+        or "no reserve" in title_str
+        or has_reserve is False
+        or (has_reserve is None and reserve_met is None)
+    ):
         reserve_status = ReserveStatus.NO_RESERVE
+    elif reserve_met is True:
+        reserve_status = ReserveStatus.MET
+    elif reserve_met is False or has_reserve is True:
+        reserve_status = ReserveStatus.NOT_MET
     else:
         reserve_status = ReserveStatus.NO_RESERVE
+
+    closing_time = (
+        datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=sec_val)
+        if sec_val > 0 and not is_closed
+        else None
+    )
 
     return LotPageSnapshot(
         title=str(root.get("title", "")),
         current_bid_eur=cur_val,
         next_min_bid_eur=next_val,
         seconds_remaining=sec_val,
+        closing_time=closing_time,
         is_leader=is_leader,
         reserve_status=reserve_status,
         is_closed=is_closed,
         raw_source="network_json",
+        extra={"has_no_bids": not has_bids},
     )
 
 
@@ -331,8 +437,36 @@ class CatawikiLotPage:
                 continue
         return None
 
+    async def _extract_next_data_snapshot(self) -> LotPageSnapshot | None:
+        """Extrae el snapshot tipado a partir del tag <script id="__NEXT_DATA__"> de Next.js."""
+        try:
+            if not hasattr(self.page, "evaluate"):
+                return None
+            data = await self.page.evaluate('''() => {
+                const el = document.getElementById('__NEXT_DATA__');
+                if (!el) return null;
+                try {
+                    const parsed = JSON.parse(el.textContent || el.innerText || '{}');
+                    return parsed.props?.pageProps?.biddingBlockResponse || null;
+                } catch (e) {
+                    return null;
+                }
+            }''')
+            if isinstance(data, dict):
+                snap = parse_network_bidding_payload(data)
+                if snap is not None:
+                    snap.raw_source = "next_data_ssr"
+                    return snap
+        except Exception:
+            return None
+        return None
+
     async def extract_snapshot(self) -> LotPageSnapshot:
-        """Extrae el estado actual del lote combinando lectura del DOM y red JSON."""
+        """Extrae el estado actual del lote combinando lectura de Next.js SSR, DOM y red JSON."""
+        # 1. Intentar extracción directa desde Next.js __NEXT_DATA__ (estado inicial / hidratado)
+        ssr_snap = await self._extract_next_data_snapshot()
+
+        # 2. Lectura directa de elementos DOM
         title = (await self._first_text(self.selectors.title_selectors)) or ""
 
         raw_current_bid = await self._first_attr_or_value(
@@ -362,10 +496,32 @@ class CatawikiLotPage:
         except Exception:
             body_text = ""
 
-        # Respaldo con el último snapshot de red si algún campo no estaba en el DOM
+        # Respaldo con el último snapshot de red si está disponible
         net = self._last_network_snapshot
+
+        # 3. Fusión jerárquica:
+        # Detectar si el lote está en apertura inicial sin pujas
+        is_opening_lot = (
+            any(phrase in body_text for phrase in self.selectors.no_bids_phrases)
+            or (ssr_snap is not None and ssr_snap.extra.get("has_no_bids", False))
+            or (net is not None and net.extra.get("has_no_bids", False))
+        )
+
+        if ssr_snap is not None:
+            if not title and ssr_snap.title:
+                title = ssr_snap.title
+            if current_bid is None or (ssr_snap.current_bid_eur > current_bid and not is_opening_lot):
+                current_bid = ssr_snap.current_bid_eur
+            if next_min is None or (ssr_snap.next_min_bid_eur > (next_min or 0) and not is_opening_lot):
+                next_min = ssr_snap.next_min_bid_eur
+            if seconds_rem is None or seconds_rem == 0.0:
+                seconds_rem = ssr_snap.seconds_remaining
+
         if current_bid is None and net is not None:
             current_bid = net.current_bid_eur
+        elif net is not None and net.current_bid_eur > (current_bid or 0) and not is_opening_lot:
+            current_bid = net.current_bid_eur
+
         if next_min is None and net is not None:
             next_min = net.next_min_bid_eur
         if seconds_rem is None and net is not None:
@@ -373,36 +529,65 @@ class CatawikiLotPage:
         if not title and net is not None:
             title = net.title
 
+        if is_opening_lot:
+            # En lotes sin pujas previas, si el DOM o SSR muestran la puja de salida (ej. 1 €),
+            # la puja actual real de mercado es 0 € y la puja inicial requerida es la de salida
+            # (1 € o el primer botón rápido de puja).
+            if current_bid is not None and (current_bid <= 1 or (ssr_snap and ssr_snap.current_bid_eur == 0)):
+                current_bid = 0
+            if next_min is None or next_min <= 0:
+                next_min = 1
+
         cur_val = current_bid if current_bid is not None else 0
-        next_val = (
-            next_min
-            if (next_min is not None and next_min > cur_val)
-            else compute_catawiki_next_min_bid(cur_val)
-        )
+        if is_opening_lot and next_min is not None and next_min > 0:
+            next_val = next_min
+        else:
+            next_val = (
+                next_min
+                if (next_min is not None and next_min > cur_val)
+                else compute_catawiki_next_min_bid(cur_val)
+            )
         sec_val = seconds_rem if seconds_rem is not None else 0.0
 
         is_leader = any(phrase in body_text for phrase in self.selectors.leader_phrases)
-        if not is_leader and net is not None and not body_text:
+        if not is_leader and ssr_snap is not None and ssr_snap.is_leader:
+            is_leader = True
+        elif not is_leader and net is not None and not body_text:
             is_leader = net.is_leader
 
         is_closed = any(phrase in body_text for phrase in self.selectors.closed_phrases)
-        if not is_closed and net is not None and not body_text:
+        if not is_closed and ssr_snap is not None and ssr_snap.is_closed:
+            is_closed = True
+        elif not is_closed and net is not None and not body_text:
             is_closed = net.is_closed
 
-        if any(phrase in body_text for phrase in self.selectors.reserve_not_met_phrases):
+        full_text = f"{title.lower()} {body_text}"
+        if any(phrase in full_text for phrase in self.selectors.no_reserve_phrases):
+            reserve_status = ReserveStatus.NO_RESERVE
+        elif any(phrase in body_text for phrase in self.selectors.reserve_not_met_phrases):
             reserve_status = ReserveStatus.NOT_MET
         elif any(phrase in body_text for phrase in self.selectors.reserve_met_phrases):
             reserve_status = ReserveStatus.MET
-        elif net is not None and net.reserve_status != ReserveStatus.NO_RESERVE and not body_text:
+        elif ssr_snap is not None:
+            reserve_status = ssr_snap.reserve_status
+        elif net is not None and not body_text:
             reserve_status = net.reserve_status
         else:
             reserve_status = ReserveStatus.NO_RESERVE
 
-        closing_time = (
-            datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=sec_val)
-            if sec_val > 0 and not is_closed
-            else None
-        )
+        closing_time = None
+        if ssr_snap is not None and ssr_snap.closing_time is not None:
+            closing_time = ssr_snap.closing_time
+        elif sec_val > 0 and not is_closed:
+            closing_time = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=sec_val)
+
+        raw_source = "hybrid"
+        if ssr_snap is not None and current_bid == ssr_snap.current_bid_eur:
+            raw_source = "next_data_ssr"
+        elif net is not None and current_bid == net.current_bid_eur:
+            raw_source = "network_json"
+        else:
+            raw_source = "dom"
 
         return LotPageSnapshot(
             title=title,
@@ -413,6 +598,7 @@ class CatawikiLotPage:
             is_leader=is_leader,
             reserve_status=reserve_status,
             is_closed=is_closed,
+            raw_source=raw_source,
         )
 
     async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
@@ -426,14 +612,18 @@ class CatawikiLotPage:
         # 1. Intentar botón de puja rápida si coincide exactamente con bid_amount_eur
         quick_clicked = False
         try:
-            quick_loc = self.page.locator('[data-testid="quick-bid-button"]')
-            count = await quick_loc.count()
-            for idx in range(count):
-                btn = quick_loc.nth(idx)
-                btn_text = (await btn.get_attribute("data-amount")) or (await btn.inner_text())
-                if parse_euro_amount(btn_text) == bid_amount_eur:
-                    await btn.click()
-                    quick_clicked = True
+            for quick_sel in ('[data-testid="quick-bid-buttons"] button', '[data-testid="quick-bid-button"]'):
+                quick_loc = self.page.locator(quick_sel)
+                count = await quick_loc.count()
+                if count > 0:
+                    for idx in range(count):
+                        btn = quick_loc.nth(idx)
+                        btn_text = (await btn.get_attribute("data-amount")) or (await btn.inner_text())
+                        if parse_euro_amount(btn_text) == bid_amount_eur:
+                            await btn.click()
+                            quick_clicked = True
+                            break
+                if quick_clicked:
                     break
         except Exception:
             quick_clicked = False

@@ -24,12 +24,24 @@ El sistema SHALL monitorizar los relojes con cierre lejano (> 5 minutos) mediant
 - **WHEN** un reloj viable entra en los últimos 5 minutos previos a su hora de cierre
 - **THEN** el sistema abre o activa el seguimiento dedicado en tiempo real para ese lote con lectura sub-segundo del temporizador, puja actual, condición de líder y aviso de reserva
 
+#### Scenario: Extracción precisa de puja actual y estado de subasta
+- **WHEN** el sistema consulta un lote en Modo Patrulla o Modo Asalto
+- **THEN** el sistema extrae el importe exacto de la puja actual, calcula el siguiente escalón mínimo conforme a los tramos oficiales de incremento de Catawiki (incluyendo micro-pujas de 1-10 € a +1 €) y clasifica el estado de reserva (MET, NOT_MET o NO_RESERVE) combinando el estado SSR inyectado con los selectores DOM del lote
+
+#### Scenario: Tratamiento de lotes en apertura inicial sin pujas previas
+- **WHEN** un lote activo en consulta no registra ninguna puja previa en su historial o muestra estado inicial de apertura
+- **THEN** el sistema adopta el importe de salida o primer botón de puja rápida como siguiente escalón mínimo admisible sin descartar el lote por comparativa estricta contra una puja actual ficticia
+
 ### Requirement: Invisibilidad previa y ejecución de puja por incremento mínimo
 El sistema SHALL abstenerse de realizar pujas hasta los últimos segundos configurados del cierre (< 25 segundos) y, al pujar, MUST enviar únicamente el siguiente escalón mínimo de puja exigido por Catawiki sin revelar el precio máximo del usuario a la plataforma.
 
 #### Scenario: Primera entrada en los segundos finales
 - **WHEN** faltan menos de 25 segundos para el cierre de un reloj, el usuario no es el máximo pujador actual y el siguiente escalón mínimo de puja no supera el techo dinámico asignado
 - **THEN** el sistema ejecuta una puja por el importe exacto del siguiente escalón mínimo válido
+
+#### Scenario: Envío de puja mediante botón rápido o campo numérico
+- **WHEN** se ordena el envío del escalón mínimo de puja a la página del lote
+- **THEN** el sistema pulsa el botón de puja rápida si coincide exactamente con el importe o introduce el valor en el campo de puja y confirma la acción en la interfaz
 
 ### Requirement: Gestión del bucle de prórrogas de +90 segundos
 El sistema SHALL continuar monitorizando el lote tras cualquier extensión de tiempo (+90 segundos) provocada por pujas en el último minuto y contraatacar cuando otro postor supere la puja del usuario, siempre que el nuevo escalón mínimo no exceda el techo dinámico ni el presupuesto disponible.

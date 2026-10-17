@@ -6,11 +6,12 @@ import pytest
 
 from chronobid.browser.catawiki_page import (
     CatawikiLotPage,
+    compute_catawiki_next_min_bid,
     parse_countdown_seconds,
     parse_euro_amount,
     parse_network_bidding_payload,
 )
-from chronobid.models.auction import ReserveStatus
+from chronobid.models.auction import AuctionStatus, ReserveStatus, WatchLot
 
 
 class SimulatedElement:
@@ -260,3 +261,281 @@ async def test_catawiki_lot_page_english_locale_and_closed_detection() -> None:
     assert snap.reserve_status == ReserveStatus.MET
     assert snap.is_closed is True
     assert snap.seconds_remaining == 0.0
+
+
+def test_catawiki_selectors_updated_definitions() -> None:
+    from chronobid.browser.catawiki_page import CatawikiSelectors
+
+    selectors = CatawikiSelectors()
+    assert '[data-testid="lot-bid-status-current-bid"]' in selectors.current_bid_selectors
+    assert 'input[name="bid"]' in selectors.bid_input_selectors
+    assert '[data-testid="quick-bid-buttons"] button' in selectors.next_min_bid_selectors
+
+
+def test_parse_network_bidding_payload_native_catawiki() -> None:
+    payload = {
+        "biddingBlockResponse": {
+            "title": "Seiko Prospex Speedtimer SBDL091",
+            "localizedCurrentBidAmount": 260,
+            "localizedMinBidAmount": 280,
+            "reservePriceMet": False,
+            "closed": False,
+            "biddingEndTime": 1792261655000,
+            "quickBids": [280, 300, 360],
+            "live": {
+                "lot": {
+                    "id": 107402108,
+                    "bid": {"EUR": 260},
+                }
+            },
+        }
+    }
+    snap = parse_network_bidding_payload(payload)
+    assert snap is not None
+    assert snap.title == "Seiko Prospex Speedtimer SBDL091"
+    assert snap.current_bid_eur == 260
+    assert snap.next_min_bid_eur == 280
+    assert snap.reserve_status == ReserveStatus.NOT_MET
+    assert snap.is_closed is False
+    assert snap.seconds_remaining > 0
+
+
+class SimulatedNextDataAndDOMPage:
+    """Página simulada con soporte de evaluate para __NEXT_DATA__ y selectores DOM reales."""
+
+    def __init__(
+        self,
+        *,
+        title: str = "Seiko Prospex Speedtimer SBDL091",
+        current_bid_dom: str = " € 260",
+        next_data_bid: int = 260,
+        next_data_min: int = 280,
+    ) -> None:
+        self.title = title
+        self.current_bid_dom = current_bid_dom
+        self.next_data_bid = next_data_bid
+        self.next_data_min = next_data_min
+        self.clicked_quick_buttons: list[str] = []
+        self.filled_inputs: list[str] = []
+
+    async def evaluate(self, script: str) -> Any:
+        return {
+            "title": self.title,
+            "localizedCurrentBidAmount": self.next_data_bid,
+            "localizedMinBidAmount": self.next_data_min,
+            "reservePriceMet": False,
+            "closed": False,
+            "biddingEndTime": 1792261655000,
+        }
+
+    def locator(self, selector: str) -> SimulatedLocator:
+        if selector in ('[data-testid="lot-title"]', "h1"):
+            return SimulatedLocator([SimulatedElement(text=self.title)])
+        if selector == '[data-testid="lot-bid-status-current-bid"]':
+            return SimulatedLocator([SimulatedElement(text=self.current_bid_dom)])
+        if selector == '[data-testid="quick-bid-buttons"] button':
+            return SimulatedLocator(
+                [
+                    SimulatedElement(
+                        text="€ 280",
+                        on_click=lambda: self.clicked_quick_buttons.append("280"),
+                    ),
+                    SimulatedElement(
+                        text="€ 300",
+                        on_click=lambda: self.clicked_quick_buttons.append("300"),
+                    ),
+                ]
+            )
+        if selector == 'input[name="bid"]':
+            return SimulatedLocator(
+                [
+                    SimulatedElement(
+                        attrs={"value": ""},
+                        on_fill=lambda v: self.filled_inputs.append(v),
+                    )
+                ]
+            )
+        if selector == "body":
+            return SimulatedLocator([SimulatedElement(text=f"{self.title} precio de reserva no alcanzado")])
+        return SimulatedLocator([])
+
+
+async def test_catawiki_hybrid_extraction_and_quick_bid() -> None:
+    sim = SimulatedNextDataAndDOMPage(current_bid_dom=" € 260", next_data_bid=260, next_data_min=280)
+    lot_page = CatawikiLotPage(sim, confirmation_wait_seconds=0.0)
+
+    snap = await lot_page.extract_snapshot()
+    assert snap.title == "Seiko Prospex Speedtimer SBDL091"
+    assert snap.current_bid_eur == 260
+    assert snap.next_min_bid_eur == 280
+    assert snap.reserve_status == ReserveStatus.NOT_MET
+    assert snap.is_closed is False
+
+    # Envío de puja mínima usando botón rápido dentro de [data-testid="quick-bid-buttons"] button
+    await lot_page.submit_minimum_bid(280)
+    assert sim.clicked_quick_buttons == ["280"]
+
+
+@pytest.mark.parametrize(
+    ("current_bid", "expected_next"),
+    [
+        (0, 1),
+        (1, 2),
+        (5, 6),
+        (10, 11),
+        (11, 16),
+        (50, 55),
+        (100, 105),
+        (101, 111),
+        (200, 210),
+        (201, 221),
+        (500, 520),
+        (501, 551),
+        (1000, 1050),
+        (1001, 1101),
+        (2000, 2100),
+        (2500, 2700),
+        (5000, 5200),
+        (6000, 6500),
+        (10000, 10500),
+        (12000, 13000),
+        (25000, 27000),
+        (60000, 65000),
+    ],
+)
+def test_compute_catawiki_next_min_bid(current_bid: int, expected_next: int) -> None:
+    assert compute_catawiki_next_min_bid(current_bid) == expected_next
+
+
+def test_reserve_status_detection() -> None:
+    # 1. Sin reserva explícito en título
+    payload_title_no_reserve = {
+        "title": "Duward - Automatic - Sin precio de reserva - 1970",
+        "reservePriceMet": None,
+        "localizedCurrentBidAmount": "10 €",
+        "localizedMinBidAmount": "15 €",
+    }
+    snap1 = parse_network_bidding_payload(payload_title_no_reserve)
+    assert snap1 is not None
+    assert snap1.reserve_status == ReserveStatus.NO_RESERVE
+
+    # 2. Sin reserva en inglés
+    payload_en_no_reserve = {
+        "title": "Vintage Chronograph - No reserve price",
+        "hasReservePrice": False,
+        "localizedCurrentBidAmount": "50 €",
+    }
+    snap2 = parse_network_bidding_payload(payload_en_no_reserve)
+    assert snap2 is not None
+    assert snap2.reserve_status == ReserveStatus.NO_RESERVE
+
+    # 3. Con reserva no alcanzada (reservePriceMet: False)
+    payload_reserve_not_met = {
+        "title": "Omega Seamaster",
+        "hasReservePrice": True,
+        "reservePriceMet": False,
+        "localizedCurrentBidAmount": "200 €",
+    }
+    snap3 = parse_network_bidding_payload(payload_reserve_not_met)
+    assert snap3 is not None
+    assert snap3.reserve_status == ReserveStatus.NOT_MET
+
+    # 4. Con reserva alcanzada (reservePriceMet: True)
+    payload_reserve_met = {
+        "title": "Omega Seamaster",
+        "hasReservePrice": True,
+        "reservePriceMet": True,
+        "localizedCurrentBidAmount": "500 €",
+    }
+    snap4 = parse_network_bidding_payload(payload_reserve_met)
+    assert snap4 is not None
+    assert snap4.reserve_status == ReserveStatus.MET
+
+
+def test_starting_lot_extraction_network_payload() -> None:
+    # Payload representativo de lote sin pujas previas
+    payload_starting = {
+        "title": "Duward Automatic",
+        "localizedCurrentBidAmount": 0,
+        "localizedStartBidAmount": 1,
+        "localizedMinBidAmount": 1,
+        "quickBids": [1, 2, 3],
+        "biddingHistory": {"bids": []},
+        "biddingEndTime": 1792774276000,
+        "reservePriceMet": None,
+    }
+    snap = parse_network_bidding_payload(payload_starting)
+    assert snap is not None
+    assert snap.current_bid_eur == 0
+    assert snap.next_min_bid_eur == 1
+    assert snap.reserve_status == ReserveStatus.NO_RESERVE
+    assert snap.extra.get("has_no_bids") is True
+
+
+async def test_duward_starting_lot_workflow_not_discarded() -> None:
+    # Simulación de la página completa de Catawiki para el lote Duward (apertura en 1 € sin pujas)
+    class SimulatedDuwardPage:
+        def __init__(self) -> None:
+            self.title = "Duward - Automatic Day Date Blue dial - Sin precio de reserva - Hombre - 1970-1979"
+            self.bidding_block = {
+                "localizedCurrentBidAmount": 0,
+                "localizedStartBidAmount": 1,
+                "localizedMinBidAmount": 1,
+                "quickBids": [1, 2, 3],
+                "biddingHistory": {"bids": []},
+                "biddingEndTime": 1792774276000,
+                "reservePriceMet": None,
+                "title": self.title,
+            }
+
+        async def evaluate(self, script: str) -> Any:
+            if "props.pageProps" in script or "__NEXT_DATA__" in script:
+                return {"biddingBlockResponse": self.bidding_block}
+            return None
+
+        def locator(self, selector: str) -> SimulatedLocator:
+            if selector == '[data-testid="lot-bid-status-current-bid"]':
+                return SimulatedLocator([SimulatedElement(text=" € 1")])
+            if selector == '[data-testid="quick-bid-buttons"] button':
+                return SimulatedLocator(
+                    [
+                        SimulatedElement(text="€ 1"),
+                        SimulatedElement(text="€ 2"),
+                        SimulatedElement(text="€ 3"),
+                    ]
+                )
+            if selector == 'input[name="bid"]':
+                return SimulatedLocator([SimulatedElement(attrs={"value": "", "placeholder": "1 o más"})])
+            if selector == "body":
+                return SimulatedLocator([SimulatedElement(text=f"{self.title} EMPEZAR A PUJAR € 1 Sin precio de reserva No hay ninguna puja")])
+            return SimulatedLocator([])
+
+    sim = SimulatedDuwardPage()
+    lot_page = CatawikiLotPage(sim, confirmation_wait_seconds=0.0)
+
+    snap = await lot_page.extract_snapshot()
+    assert snap.current_bid_eur == 0
+    assert snap.next_min_bid_eur == 1
+    assert snap.reserve_status == ReserveStatus.NO_RESERVE
+
+    # Validar que WatchLot NO queda descartado como PERDIDO: Superó Máximo con max_bid_eur = 5 €
+    lot = WatchLot(
+        lot_id="107658268",
+        url="https://www.catawiki.com/es/l/107658268-duward-automatic",
+        max_bid_eur=5,
+        title=snap.title,
+    )
+    status = lot.apply_market_snapshot(
+        current_bid_eur=snap.current_bid_eur,
+        next_min_bid_eur=snap.next_min_bid_eur,
+        seconds_remaining=snap.seconds_remaining,
+        is_leader=snap.is_leader,
+        reserve_status=snap.reserve_status,
+        is_closed=snap.is_closed,
+    )
+    assert status == AuctionStatus.PATROL
+    assert lot.status != AuctionStatus.DISCARDED_MAX_EXCEEDED
+    assert lot.is_viable is True
+
+
+
