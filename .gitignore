@@ -1,0 +1,24 @@
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Caché de Python y empaquetado
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+src/*.egg-info/
+build/
+dist/
+.eggs/
+
+# Tests y cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Archivos temporales de Excel
+*.xlsx.tmp
+~$*.xlsx
+relojes.xlsx
