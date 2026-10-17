@@ -14,6 +14,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
 from chronobid.models.auction import (
+    ERROR_TITLE_PHRASES,
     AuctionStatus,
     GlobalBudgetState,
     ReserveStatus,
@@ -178,7 +179,9 @@ def read_workbook_config(file_path: str | Path) -> WorkbookConfigSnapshot:
                 lots.append(invalid_lot)
             else:
                 # Preservar valores previos de salida si existen en el libro
-                existing_title = str(ws.cell(row=row_idx, column=3).value or "")
+                existing_title = str(ws.cell(row=row_idx, column=3).value or "").strip()
+                if any(phrase in existing_title.lower() for phrase in ERROR_TITLE_PHRASES):
+                    existing_title = ""
                 existing_my_bid = _parse_positive_eur(ws.cell(row=row_idx, column=6).value) or 0
                 existing_cur_bid = _parse_positive_eur(ws.cell(row=row_idx, column=7).value) or 0
                 valid_lot = WatchLot(

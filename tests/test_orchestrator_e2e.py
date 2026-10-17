@@ -2,9 +2,14 @@
 
 from pathlib import Path
 
+import pytest
 from openpyxl import load_workbook
 
-from chronobid.browser.catawiki_page import LotPageSnapshot, compute_catawiki_next_min_bid
+from chronobid.browser.catawiki_page import (
+    CatawikiPageLoadError,
+    LotPageSnapshot,
+    compute_catawiki_next_min_bid,
+)
 from chronobid.excel.workbook_io import create_excel_template
 from chronobid.models.auction import AuctionStatus, ReserveStatus, WatchLot
 from chronobid.orchestrator import AuctionOrchestrator
@@ -233,3 +238,73 @@ async def test_orchestrator_e2e_overlapping_auctions_reserve_ladder_and_portfoli
     assert ws["G9"].value == 190
     assert ws["E10"].value == "PERDIDO: Sin Presupuesto"
     wb.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_patrol_handles_transient_error_without_losing_lot(tmp_path: Path) -> None:
+    excel_path = tmp_path / "cartera_resiliente.xlsx"
+    url = "https://www.catawiki.com/es/l/107658893-seiko-presage"
+    create_excel_template(excel_path, default_budget_eur=1000, sample_rows=[(url, 400)])
+
+    # Establecer título inicial legítimo en el Excel
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    assert ws is not None
+    ws.cell(row=7, column=3, value="Seiko - Presage - SPB045J1")
+    wb.save(excel_path)
+    wb.close()
+
+    call_count = 0
+
+    class FailingController:
+        async def extract_snapshot(self) -> LotPageSnapshot:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Simular error transitorio en la primera pasada
+                raise CatawikiPageLoadError("Página de error detectada: 'we can't load this page right now'")
+            # Segunda pasada exitosa
+            return LotPageSnapshot(
+                title="Seiko - Presage - SPB045J1",
+                current_bid_eur=240,
+                next_min_bid_eur=260,
+                seconds_remaining=3600.0,
+                is_leader=False,
+                reserve_status=ReserveStatus.NO_RESERVE,
+                is_closed=False,
+            )
+
+        async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
+            raise NotImplementedError
+
+        async def close(self) -> None:
+            pass
+
+    async def controller_factory(lot: WatchLot) -> FailingController:
+        return FailingController()
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        controller_factory=controller_factory,
+        excel_retry_seconds=0.01,
+    )
+
+    lot = orchestrator.lots[0]
+    assert lot.title == "Seiko - Presage - SPB045J1"
+
+    # Primera pasada: debe fallar con CatawikiPageLoadError pero mantener el lote vivo
+    await orchestrator.run_patrol_step()
+    assert lot.status.is_active is True
+    assert lot.status != AuctionStatus.LOST_OTHER
+    assert lot.is_closed is False
+    assert lot.title == "Seiko - Presage - SPB045J1"  # No sobreescrito por error
+    assert "Error puntual de carga en Catawiki" in (lot.notes or "")
+
+    # Segunda pasada: lectura exitosa
+    await orchestrator.run_patrol_step()
+    assert lot.status == AuctionStatus.PATROL
+    assert lot.is_closed is False
+    assert lot.current_bid_eur == 240
+    assert lot.next_min_bid_eur == 260
+    assert lot.title == "Seiko - Presage - SPB045J1"
+

@@ -28,6 +28,10 @@ El sistema SHALL escribir y mantener actualizadas en el fichero Excel las column
 - **WHEN** una subasta finaliza definitivamente tras agotar su tiempo y prórrogas
 - **THEN** el sistema escribe en el Excel el estado final ("GANADO", "PERDIDO: Superó Máximo", "PERDIDO: Sin Presupuesto" o "NO ADJUDICADO: Reserva No Alcanzada") junto con el precio de cierre
 
+#### Scenario: Preservación de título y estado activo ante fallo transitorio de consulta
+- **WHEN** la consulta a Catawiki sobre un lote activo falla temporalmente por degradación de servicio o error de red
+- **THEN** el sistema preserva en el Excel el título legítimo previamente registrado y el estado activo del reloj, anotando la incidencia de reintento en "Notas / Último Evento" sin marcar la subasta como "PERDIDO" ni cerrar el lote
+
 ### Requirement: Reporte de contabilidad del presupuesto global en Excel
 El sistema SHALL actualizar en la cabecera del fichero Excel el desglose del presupuesto global: importe gastado en firme (relojes ganados), importe comprometido en vuelo (relojes activos donde el usuario es líder) y saldo disponible.
 

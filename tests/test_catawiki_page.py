@@ -6,6 +6,7 @@ import pytest
 
 from chronobid.browser.catawiki_page import (
     CatawikiLotPage,
+    CatawikiPageLoadError,
     compute_catawiki_next_min_bid,
     parse_countdown_seconds,
     parse_euro_amount,
@@ -536,6 +537,76 @@ async def test_duward_starting_lot_workflow_not_discarded() -> None:
     assert status == AuctionStatus.PATROL
     assert lot.status != AuctionStatus.DISCARDED_MAX_EXCEEDED
     assert lot.is_viable is True
+
+
+@pytest.mark.asyncio
+async def test_error_page_raises_catawiki_page_load_error() -> None:
+    """Verifica que una pantalla con 'We can't load this page right now' lanza CatawikiPageLoadError y no corrompe el título."""
+
+    class SimulatedErrorPage:
+        def locator(self, selector: str) -> SimulatedLocator:
+            if selector == "h1":
+                return SimulatedLocator([SimulatedElement(text="We can't load this page right now")])
+            if selector == "body":
+                return SimulatedLocator(
+                    [SimulatedElement(text="We can't load this page right now. Please try again later.")]
+                )
+            return SimulatedLocator([])
+
+    sim = SimulatedErrorPage()
+    lot_page = CatawikiLotPage(sim, confirmation_wait_seconds=0.0)
+
+    # El selector de título debe descartar el h1 de error
+    title = await lot_page._first_text(lot_page.selectors.title_selectors)
+    assert title is None
+
+    # extract_snapshot debe lanzar CatawikiPageLoadError
+    with pytest.raises(CatawikiPageLoadError, match="Página de error detectada"):
+        await lot_page.extract_snapshot()
+
+
+@pytest.mark.asyncio
+async def test_missing_countdown_preserves_none_seconds_remaining() -> None:
+    """Verifica que si la cuenta atrás no está presente en una subasta abierta, seconds_remaining es None y no 0.0."""
+
+    class SimulatedOpenLotWithoutCountdown:
+        def locator(self, selector: str) -> SimulatedLocator:
+            if selector == '[data-testid="lot-title"]':
+                return SimulatedLocator([SimulatedElement(text="Seiko Presage SPB045J1")])
+            if selector == '[data-testid="lot-bid-status-current-bid"]':
+                return SimulatedLocator([SimulatedElement(text="250 €")])
+            if selector == '[data-testid="next-minimum-bid"]':
+                return SimulatedLocator([SimulatedElement(text="270 €")])
+            if selector == "body":
+                return SimulatedLocator([SimulatedElement(text="seiko presage spb045j1 sin precio de reserva")])
+            # Sin selectores de countdown
+            return SimulatedLocator([])
+
+    sim = SimulatedOpenLotWithoutCountdown()
+    lot_page = CatawikiLotPage(sim, confirmation_wait_seconds=0.0)
+
+    snap = await lot_page.extract_snapshot()
+    assert snap.title == "Seiko Presage SPB045J1"
+    assert snap.current_bid_eur == 250
+    assert snap.next_min_bid_eur == 270
+    assert snap.is_closed is False
+    assert snap.seconds_remaining is None  # Debe ser None, NUNCA 0.0
+
+
+@pytest.mark.asyncio
+async def test_blank_page_without_auction_data_raises_load_error() -> None:
+    """Verifica que una página vacía o sin datos de subasta lanza CatawikiPageLoadError."""
+
+    class SimulatedEmptyPage:
+        def locator(self, selector: str) -> SimulatedLocator:
+            return SimulatedLocator([])
+
+    sim = SimulatedEmptyPage()
+    lot_page = CatawikiLotPage(sim, confirmation_wait_seconds=0.0)
+
+    with pytest.raises(CatawikiPageLoadError, match="No se encontraron elementos de subasta"):
+        await lot_page.extract_snapshot()
+
 
 
 

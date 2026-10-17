@@ -8,7 +8,11 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Protocol
 
-from chronobid.browser.catawiki_page import CatawikiLotPage, LotPageSnapshot
+from chronobid.browser.catawiki_page import (
+    CatawikiLotPage,
+    CatawikiPageLoadError,
+    LotPageSnapshot,
+)
 from chronobid.browser.cdp_client import CDPBrowserClient
 from chronobid.excel.sync_worker import ExcelSyncWorker
 from chronobid.excel.workbook_io import read_workbook_config
@@ -125,19 +129,37 @@ class AuctionOrchestrator:
             if lot.lot_id in self._assault_tasks and not self._assault_tasks[lot.lot_id].done():
                 continue
 
-            controller = await self._controller_factory(lot)
             try:
-                snap = await controller.extract_snapshot()
-                lot.apply_market_snapshot(
-                    current_bid_eur=snap.current_bid_eur,
-                    next_min_bid_eur=snap.next_min_bid_eur,
-                    seconds_remaining=snap.seconds_remaining,
-                    is_leader=snap.is_leader,
-                    reserve_status=snap.reserve_status,
-                    is_closed=snap.is_closed,
-                    title=snap.title or lot.title,
-                    closing_time=snap.closing_time or lot.closing_time,
-                )
+                controller = await self._controller_factory(lot)
+            except Exception as exc:
+                logger.warning("Fallo al conectar controlador para lote %s: %s", lot.lot_id, exc)
+                lot.notes = f"Error puntual de conexión en Catawiki: {exc}"
+                self._emit_and_enqueue()
+                continue
+
+            try:
+                try:
+                    snap = await controller.extract_snapshot()
+                    lot.apply_market_snapshot(
+                        current_bid_eur=snap.current_bid_eur,
+                        next_min_bid_eur=snap.next_min_bid_eur,
+                        seconds_remaining=snap.seconds_remaining,
+                        is_leader=snap.is_leader,
+                        reserve_status=snap.reserve_status,
+                        is_closed=snap.is_closed,
+                        title=snap.title or lot.title,
+                        closing_time=snap.closing_time or lot.closing_time,
+                    )
+                except CatawikiPageLoadError as err:
+                    logger.warning("Error puntual de carga en Catawiki para %s: %s", lot.lot_id, err)
+                    lot.notes = f"Error puntual de carga en Catawiki (reintentando en patrulla): {err}"
+                    self._emit_and_enqueue()
+                    continue
+                except Exception as exc:
+                    logger.error("Error inesperado al consultar lote %s: %s", lot.lot_id, exc)
+                    lot.notes = f"Error de consulta en Catawiki: {exc}"
+                    self._emit_and_enqueue()
+                    continue
             finally:
                 await controller.close()
 
@@ -177,7 +199,21 @@ class AuctionOrchestrator:
         controller = await self._controller_factory(lot)
         try:
             while not self._stop_event.is_set() and lot.status.is_active and not lot.is_closed:
-                snap = await controller.extract_snapshot()
+                try:
+                    snap = await controller.extract_snapshot()
+                except CatawikiPageLoadError as err:
+                    logger.warning("Fallo transitorio en asalto para %s: %s", lot.lot_id, err)
+                    lot.notes = f"Fallo transitorio en asalto: {err}"
+                    self._emit_and_enqueue()
+                    await asyncio.sleep(self.assault_tick_seconds)
+                    continue
+                except Exception as exc:
+                    logger.error("Error inesperado en asalto para %s: %s", lot.lot_id, exc)
+                    lot.notes = f"Error en asalto: {exc}"
+                    self._emit_and_enqueue()
+                    await asyncio.sleep(self.assault_tick_seconds)
+                    continue
+
                 lot.apply_market_snapshot(
                     current_bid_eur=snap.current_bid_eur,
                     next_min_bid_eur=snap.next_min_bid_eur,

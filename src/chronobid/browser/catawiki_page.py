@@ -11,12 +11,20 @@ from typing import Any
 from chronobid.models.auction import ReserveStatus
 
 
+class CatawikiPageLoadError(Exception):
+    """Excepción lanzada cuando una página de Catawiki devuelve un error transitorio o no es un lote válido."""
+
+    pass
+
+
 @dataclass(frozen=True)
 class CatawikiSelectors:
     """Selectores DOM y patrones de texto bilingües (ES/EN) configurables para Catawiki."""
 
     title_selectors: tuple[str, ...] = (
         '[data-testid="lot-title"]',
+        "h1[data-testid='lot-title']",
+        "h1.be-lot-title",
         "h1",
     )
     current_bid_selectors: tuple[str, ...] = (
@@ -96,6 +104,18 @@ class CatawikiSelectors:
         "auction closed",
         "lot closed",
     )
+    error_phrases: tuple[str, ...] = (
+        "we can't load this page right now",
+        "we cannot load this page right now",
+        "no podemos cargar esta página en este momento",
+        "no podemos cargar esta página",
+        "something went wrong",
+        "algo ha salido mal",
+        "página no encontrada",
+        "page not found",
+        "access denied",
+        "just a moment...",
+    )
 
 
 @dataclass
@@ -105,7 +125,7 @@ class LotPageSnapshot:
     title: str = ""
     current_bid_eur: int = 0
     next_min_bid_eur: int = 0
-    seconds_remaining: float = 0.0
+    seconds_remaining: float | None = None
     closing_time: datetime | None = None
     is_leader: bool = False
     reserve_status: ReserveStatus = ReserveStatus.NO_RESERVE
@@ -411,7 +431,10 @@ class CatawikiLotPage:
                     first = loc.first
                     text = await first.inner_text()
                     if text and str(text).strip():
-                        return str(text).strip()
+                        val = str(text).strip()
+                        if any(phrase in val.lower() for phrase in self.selectors.error_phrases):
+                            continue
+                        return val
             except Exception:
                 continue
         return None
@@ -432,7 +455,10 @@ class CatawikiLotPage:
                             return str(val).strip()
                     text = await first.inner_text()
                     if text and str(text).strip():
-                        return str(text).strip()
+                        val_str = str(text).strip()
+                        if any(phrase in val_str.lower() for phrase in self.selectors.error_phrases):
+                            continue
+                        return val_str
             except Exception:
                 continue
         return None
@@ -463,10 +489,24 @@ class CatawikiLotPage:
 
     async def extract_snapshot(self) -> LotPageSnapshot:
         """Extrae el estado actual del lote combinando lectura de Next.js SSR, DOM y red JSON."""
-        # 1. Intentar extracción directa desde Next.js __NEXT_DATA__ (estado inicial / hidratado)
+        # 1. Texto completo visible de la página (o contenedor principal) para detectar errores y avisos ES/EN
+        body_text = ""
+        try:
+            body_loc = self.page.locator("body")
+            if await body_loc.count() > 0:
+                body_text = (await body_loc.first.inner_text()).lower()
+        except Exception:
+            body_text = ""
+
+        # Detección temprana de páginas de error de Catawiki
+        for phrase in self.selectors.error_phrases:
+            if phrase in body_text:
+                raise CatawikiPageLoadError(f"Página de error detectada en Catawiki: '{phrase}'")
+
+        # 2. Intentar extracción directa desde Next.js __NEXT_DATA__ (estado inicial / hidratado)
         ssr_snap = await self._extract_next_data_snapshot()
 
-        # 2. Lectura directa de elementos DOM
+        # 3. Lectura directa de elementos DOM
         title = (await self._first_text(self.selectors.title_selectors)) or ""
 
         raw_current_bid = await self._first_attr_or_value(
@@ -487,25 +527,38 @@ class CatawikiLotPage:
         )
         seconds_rem = parse_countdown_seconds(raw_countdown)
 
-        # Texto completo visible de la página (o contenedor principal) para detectar avisos ES/EN
-        body_text = ""
-        try:
-            body_loc = self.page.locator("body")
-            if await body_loc.count() > 0:
-                body_text = (await body_loc.first.inner_text()).lower()
-        except Exception:
-            body_text = ""
-
         # Respaldo con el último snapshot de red si está disponible
         net = self._last_network_snapshot
 
-        # 3. Fusión jerárquica:
-        # Detectar si el lote está en apertura inicial sin pujas
+        is_closed = any(phrase in body_text for phrase in self.selectors.closed_phrases)
+        if not is_closed and ssr_snap is not None and ssr_snap.is_closed:
+            is_closed = True
+        elif not is_closed and net is not None and not body_text:
+            is_closed = net.is_closed
+
+        # Detección de lotes en apertura inicial sin pujas
         is_opening_lot = (
             any(phrase in body_text for phrase in self.selectors.no_bids_phrases)
             or (ssr_snap is not None and ssr_snap.extra.get("has_no_bids", False))
             or (net is not None and net.extra.get("has_no_bids", False))
         )
+
+        # Validación de que la página contiene datos genuinos de subasta
+        has_auction_data = (
+            ssr_snap is not None
+            or net is not None
+            or current_bid is not None
+            or next_min is not None
+            or seconds_rem is not None
+            or is_opening_lot
+            or is_closed
+        )
+        if not has_auction_data:
+            raise CatawikiPageLoadError(
+                "No se encontraron elementos de subasta (puja, contador o estado) en la página de Catawiki."
+            )
+
+        sec_val = seconds_rem
 
         if ssr_snap is not None:
             if not title and ssr_snap.title:
@@ -514,8 +567,8 @@ class CatawikiLotPage:
                 current_bid = ssr_snap.current_bid_eur
             if next_min is None or (ssr_snap.next_min_bid_eur > (next_min or 0) and not is_opening_lot):
                 next_min = ssr_snap.next_min_bid_eur
-            if seconds_rem is None or seconds_rem == 0.0:
-                seconds_rem = ssr_snap.seconds_remaining
+            if sec_val is None or sec_val == 0.0:
+                sec_val = ssr_snap.seconds_remaining
 
         if current_bid is None and net is not None:
             current_bid = net.current_bid_eur
@@ -524,8 +577,8 @@ class CatawikiLotPage:
 
         if next_min is None and net is not None:
             next_min = net.next_min_bid_eur
-        if seconds_rem is None and net is not None:
-            seconds_rem = net.seconds_remaining
+        if sec_val is None and net is not None:
+            sec_val = net.seconds_remaining
         if not title and net is not None:
             title = net.title
 
@@ -547,19 +600,12 @@ class CatawikiLotPage:
                 if (next_min is not None and next_min > cur_val)
                 else compute_catawiki_next_min_bid(cur_val)
             )
-        sec_val = seconds_rem if seconds_rem is not None else 0.0
 
         is_leader = any(phrase in body_text for phrase in self.selectors.leader_phrases)
         if not is_leader and ssr_snap is not None and ssr_snap.is_leader:
             is_leader = True
         elif not is_leader and net is not None and not body_text:
             is_leader = net.is_leader
-
-        is_closed = any(phrase in body_text for phrase in self.selectors.closed_phrases)
-        if not is_closed and ssr_snap is not None and ssr_snap.is_closed:
-            is_closed = True
-        elif not is_closed and net is not None and not body_text:
-            is_closed = net.is_closed
 
         full_text = f"{title.lower()} {body_text}"
         if any(phrase in full_text for phrase in self.selectors.no_reserve_phrases):
@@ -578,7 +624,7 @@ class CatawikiLotPage:
         closing_time = None
         if ssr_snap is not None and ssr_snap.closing_time is not None:
             closing_time = ssr_snap.closing_time
-        elif sec_val > 0 and not is_closed:
+        elif sec_val is not None and sec_val > 0 and not is_closed:
             closing_time = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=sec_val)
 
         raw_source = "hybrid"

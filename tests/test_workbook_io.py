@@ -166,3 +166,26 @@ def test_write_workbook_state_updates_outputs_and_preserves_user_inputs(tmp_path
     assert ws_check["I7"].value == 480
     assert ws_check["J7"].value == "Puja líder aceptada"
     wb_check.close()
+
+
+def test_read_workbook_config_ignores_error_titles(tmp_path: Path) -> None:
+    excel_path = tmp_path / "relojes_con_error.xlsx"
+    create_excel_template(
+        excel_path,
+        default_budget_eur=1000,
+        sample_rows=[("https://www.catawiki.com/es/l/107658893-seiko-presage", 400)],
+    )
+
+    # Simular que la fila 7 tiene en la columna C el mensaje de error "We can't load this page right now"
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    assert ws is not None
+    ws.cell(row=7, column=3, value="We can't load this page right now")
+    wb.save(excel_path)
+    wb.close()
+
+    config = read_workbook_config(excel_path)
+    assert len(config.lots) == 1
+    lot = config.lots[0]
+    assert lot.title == ""  # Debe haber ignorado el mensaje de error
+

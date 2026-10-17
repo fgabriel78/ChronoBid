@@ -191,3 +191,64 @@ def test_extract_lot_id() -> None:
         == "lot-87654321"
     )
     assert extract_lot_id("", fallback_row=9) == "row-9"
+
+
+def test_apply_market_snapshot_rejects_error_titles() -> None:
+    lot = WatchLot(
+        lot_id="lot-presage",
+        url="https://www.catawiki.com/es/l/107658893-seiko-presage-spb045j1",
+        max_bid_eur=400,
+        title="Seiko - Presage - SPB045J1 - Hombre",
+    )
+    # Si llega un título que contiene frase de error, no debe sobreescribir el título original
+    lot.apply_market_snapshot(
+        current_bid_eur=200,
+        next_min_bid_eur=220,
+        seconds_remaining=3600,
+        is_leader=False,
+        title="We can't load this page right now",
+    )
+    assert lot.title == "Seiko - Presage - SPB045J1 - Hombre"
+
+
+def test_apply_market_snapshot_does_not_close_when_seconds_remaining_is_none() -> None:
+    lot = WatchLot(
+        lot_id="lot-presage",
+        url="https://www.catawiki.com/es/l/107658893-seiko-presage-spb045j1",
+        max_bid_eur=400,
+        title="Seiko Presage",
+    )
+    status = lot.apply_market_snapshot(
+        current_bid_eur=200,
+        next_min_bid_eur=220,
+        seconds_remaining=None,
+        is_leader=False,
+        is_closed=False,
+    )
+    assert status == AuctionStatus.PATROL
+    assert lot.is_closed is False
+    assert lot.status != AuctionStatus.LOST_OTHER
+
+
+def test_apply_market_snapshot_does_not_close_if_closing_time_is_future_without_is_closed() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    lot = WatchLot(
+        lot_id="lot-presage",
+        url="https://www.catawiki.com/es/l/107658893-seiko-presage-spb045j1",
+        max_bid_eur=400,
+        title="Seiko Presage",
+        closing_time=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=5),
+    )
+    # Lectura anómala con seconds_remaining=0 pero sin is_closed y con closing_time a 5 días
+    status = lot.apply_market_snapshot(
+        current_bid_eur=200,
+        next_min_bid_eur=220,
+        seconds_remaining=0,
+        is_leader=False,
+        is_closed=False,
+    )
+    assert status == AuctionStatus.PATROL
+    assert lot.is_closed is False
+    assert lot.status != AuctionStatus.LOST_OTHER
+

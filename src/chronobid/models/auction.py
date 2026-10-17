@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from urllib.parse import urlparse
+
+ERROR_TITLE_PHRASES: tuple[str, ...] = (
+    "we can't load this page right now",
+    "we cannot load this page right now",
+    "no podemos cargar esta página en este momento",
+    "no podemos cargar esta página",
+    "something went wrong",
+    "algo ha salido mal",
+    "página no encontrada",
+    "page not found",
+    "access denied",
+    "just a moment...",
+)
 
 
 class AuctionStatus(str, Enum):
@@ -236,20 +249,37 @@ class WatchLot:
         if self.status == AuctionStatus.VALIDATION_ERROR:
             return self.status
 
-        if title:
+        if title and not any(phrase in title.lower() for phrase in ERROR_TITLE_PHRASES):
             self.title = title
         if closing_time is not None:
             self.closing_time = closing_time
 
         self.current_bid_eur = max(0, current_bid_eur)
         self.next_min_bid_eur = max(0, next_min_bid_eur)
-        self.seconds_remaining = seconds_remaining
         self.is_leader = is_leader
         if reserve_status != ReserveStatus.UNKNOWN:
             self.reserve_status = reserve_status
         self.is_closed = is_closed
 
-        if is_closed or (seconds_remaining is not None and seconds_remaining <= 0):
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        has_future_closing = (
+            self.closing_time is not None
+            and self.closing_time > (now_utc + timedelta(seconds=60))
+        )
+        if has_future_closing and not is_closed and (seconds_remaining is None or seconds_remaining <= 0):
+            effective_seconds = max(0.0, (self.closing_time - now_utc).total_seconds())
+        else:
+            effective_seconds = seconds_remaining
+
+        self.seconds_remaining = effective_seconds
+
+        should_close = is_closed or (
+            effective_seconds is not None
+            and effective_seconds <= 0
+            and not has_future_closing
+        )
+
+        if should_close:
             self.is_closed = True
             self.seconds_remaining = 0.0
             if self.is_leader:
@@ -295,7 +325,7 @@ class WatchLot:
             self.notes = f"Superado (actual: {self.current_bid_eur} €)"
             return self.status
 
-        if seconds_remaining is not None and seconds_remaining <= 300:
+        if effective_seconds is not None and effective_seconds <= 300:
             self.status = AuctionStatus.ASSAULT
         else:
             self.status = AuctionStatus.PATROL
