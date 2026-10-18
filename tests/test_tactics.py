@@ -1,4 +1,4 @@
-"""Tests unitarios del motor táctico en tests/test_tactics.py."""
+"""Unit tests for the tactical engine in tests/test_tactics.py."""
 
 from chronobid.models.auction import AuctionStatus, ReserveStatus, WatchLot
 from chronobid.strategy.ledger import BudgetLedger
@@ -50,23 +50,23 @@ def test_tactics_counterattack_during_90s_overtime_and_abandon_above_ceiling() -
         my_last_bid_eur=220,
         current_bid_eur=240,
         next_min_bid_eur=260,
-        seconds_remaining=88.0,  # Prórroga de +90s recién activada por un rival
+        seconds_remaining=88.0,  # Overtime (+90s) just triggered by a rival
         is_leader=False,
     )
 
-    # Contraataque dentro del techo dinámico
+    # Counterattack within dynamic ceiling
     decision_counter = engine.evaluate_lot(lot, dynamic_ceiling_eur=350)
     assert decision_counter.should_bid is True
     assert decision_counter.bid_amount_eur == 260
     assert "prórroga" in decision_counter.reason
 
-    # El rival sube por encima del techo dinámico (360 > 350) -> abandono inmediato
+    # The rival bids above dynamic ceiling (360 > 350) -> immediate abandon
     lot.current_bid_eur = 340
     lot.next_min_bid_eur = 360
     decision_abandon = engine.evaluate_lot(lot, dynamic_ceiling_eur=350)
     assert decision_abandon.should_bid is False
 
-    # El rival supera la puja máxima del reloj (420 > 400) -> poda
+    # The rival exceeds the watch's maximum bid (420 > 400) -> prune
     lot.current_bid_eur = 400
     lot.next_min_bid_eur = 420
     decision_prune = engine.evaluate_lot(lot, dynamic_ceiling_eur=400)
@@ -88,18 +88,18 @@ def test_tactics_reserve_price_step_by_step_ladder() -> None:
         reserve_status=ReserveStatus.NOT_MET,
     )
 
-    # Faltando 60s (> 25s), espera sin autopujar todavía
+    # With 60s remaining (> 25s), wait without self-bidding yet
     d_wait = engine.evaluate_lot(lot, dynamic_ceiling_eur=450)
     assert d_wait.should_bid is False
 
-    # Entra en los últimos 25s con reserva NO alcanzada -> sube un único escalón a 330 €
+    # Enters final 25s with reserve NOT met -> raises a single step to 330 €
     lot.seconds_remaining = 18.0
     d_step1 = engine.evaluate_lot(lot, dynamic_ceiling_eur=450)
     assert d_step1.should_bid is True
     assert d_step1.bid_amount_eur == 330
     assert d_step1.is_reserve_step is True
 
-    # Sigue sin alcanzarse la reserva en 330 €, siguiente escalón 360 € -> sube un escalón más
+    # Reserve still not met at 330 €, next step 360 € -> raises one more step
     lot.my_last_bid_eur = 330
     lot.current_bid_eur = 330
     lot.next_min_bid_eur = 360
@@ -109,7 +109,7 @@ def test_tactics_reserve_price_step_by_step_ladder() -> None:
     assert d_step2.bid_amount_eur == 360
     assert d_step2.is_reserve_step is True
 
-    # En 360 € desaparece el aviso de reserva (ReserveStatus.MET) -> detiene autopujas al instante
+    # At 360 € the reserve notice disappears (ReserveStatus.MET) -> stops self-bidding immediately
     lot.my_last_bid_eur = 360
     lot.current_bid_eur = 360
     lot.next_min_bid_eur = 390
@@ -117,7 +117,7 @@ def test_tactics_reserve_price_step_by_step_ladder() -> None:
     d_unlocked = engine.evaluate_lot(lot, dynamic_ceiling_eur=450)
     assert d_unlocked.should_bid is False
 
-    # Caso borde: la reserva aún no se alcanza y el siguiente escalón (460 €) supera el techo (450 €)
+    # Edge case: reserve is still not met and next step (460 €) exceeds ceiling (450 €)
     lot.reserve_status = ReserveStatus.NOT_MET
     lot.current_bid_eur = 430
     lot.next_min_bid_eur = 460
@@ -140,14 +140,14 @@ async def test_process_tick_and_decide_releases_and_reserves_atomically() -> Non
         is_leader=False,
     )
 
-    # Tick 1: decide pujar 220 € y los compromete en el Ledger
+    # Tick 1: decides to bid 220 € and commits them to the Ledger
     d1 = await engine.process_tick_and_decide(lot, [lot], ledger, optimizer)
     assert d1.should_bid is True
     assert d1.bid_amount_eur == 220
     assert ledger.committed_leader_eur == 220
     lot.record_own_bid(220, reserve_status=ReserveStatus.NO_RESERVE)
 
-    # Tick 2: un rival nos supera y pone el lote en 410 € (> max_bid_eur 400 €)
+    # Tick 2: a rival outbids us, placing lot at 410 € (> max_bid_eur 400 €)
     lot.apply_market_snapshot(
         current_bid_eur=390,
         next_min_bid_eur=410,
@@ -156,7 +156,7 @@ async def test_process_tick_and_decide_releases_and_reserves_atomically() -> Non
     )
     d2 = await engine.process_tick_and_decide(lot, [lot], ledger, optimizer)
     assert d2.should_bid is False
-    # El saldo comprometido de 220 € ha debido liberarse automáticamente
+    # The committed amount of 220 € should have been automatically released
     assert ledger.committed_leader_eur == 0
     assert ledger.available_eur == 500
 

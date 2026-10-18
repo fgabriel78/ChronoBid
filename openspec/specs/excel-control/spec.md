@@ -2,66 +2,66 @@
 
 ## Purpose
 
-Gestiona la lectura de parámetros de entrada (presupuesto global en euros, URLs de relojes y pujas máximas limpias) y la actualización asíncrona del estado de las subastas en un fichero Excel en segundo plano sin bloquear la operativa de pujas.
+Manages reading input parameters (global budget in euros, watch URLs, and clean maximum bids) and asynchronously updating auction status in an Excel file in the background without blocking bidding operations.
 
 ## Requirements
 
-### Requirement: Lectura de configuración global y catálogo de relojes
-El sistema SHALL leer de la hoja de cálculo Excel el presupuesto máximo global en euros y la lista de relojes candidatos compuestos por su URL de Catawiki y la puja máxima limpia autorizada por el usuario, detectando modificaciones en caliente y reconciliando el estado activo en memoria durante la ejecución.
+### Requirement: Reading global configuration and watch catalog
+The system SHALL read from the Excel spreadsheet the global maximum budget in euros and the list of candidate watches consisting of their Catawiki URL and user-authorized clean maximum bid, detecting live modifications and reconciling active in-memory state during execution.
 
-#### Scenario: Carga inicial válida del fichero Excel
-- **WHEN** el agente inicia o recarga el fichero Excel con un presupuesto global positivo y filas con URL y puja máxima limpia
-- **THEN** el sistema registra el presupuesto global y crea una entrada de seguimiento activa para cada reloj válido
+#### Scenario: Valid initial loading of Excel file
+- **WHEN** the agent starts or reloads the Excel file with a positive global budget and rows with URL and clean maximum bid
+- **THEN** the system registers the global budget and creates an active tracking entry for each valid watch
 
-#### Scenario: Fila con datos incompletos o inválidos
-- **WHEN** una fila del fichero Excel carece de URL de Catawiki o tiene una puja máxima no numérica o menor o igual a cero
-- **THEN** el sistema marca el estado de esa fila como error de validación y continúa procesando el resto de relojes
+#### Scenario: Row with incomplete or invalid data
+- **WHEN** a row in the Excel file lacks a Catawiki URL or has a non-numeric or non-positive maximum bid
+- **THEN** the system marks the status of that row as a validation error and continues processing remaining watches
 
-#### Scenario: Reconciliación dinámica por modificación de presupuesto global en caliente
-- **WHEN** el usuario modifica la celda de Presupuesto Global (B1) en el fichero Excel y guarda los cambios durante la ejecución
-- **THEN** el sistema detecta la modificación, actualiza el presupuesto global en el registro atómico (Ledger) y recalcula el saldo disponible y los techos dinámicos de cartera sin reiniciar el orquestador
+#### Scenario: Dynamic reconciliation on live global budget modification
+- **WHEN** the user modifies the Global Budget cell (B1) in the Excel file and saves changes during execution
+- **THEN** the system detects the modification, updates the global budget in the atomic registry (Ledger), and recalculates available balance and dynamic portfolio ceilings without restarting the orchestrator
 
-#### Scenario: Incorporación dinámica de nuevos relojes en caliente
-- **WHEN** el usuario añade una nueva fila con URL de Catawiki y puja máxima válida en el fichero Excel durante la ejecución
-- **THEN** el sistema incorpora el nuevo lote a la cartera activa en estado pendiente y activa una consulta inmediata de patrulla para extraer sus datos de mercado
+#### Scenario: Dynamic addition of new watches at runtime
+- **WHEN** the user adds a new row with a Catawiki URL and valid maximum bid in the Excel file during execution
+- **THEN** the system adds the new lot to the active portfolio in pending status and triggers an immediate patrol query to extract its market data
 
-#### Scenario: Modificación dinámica de puja máxima y reactivación de lotes viables
-- **WHEN** el usuario modifica la puja máxima de un reloj existente en el fichero Excel
-- **THEN** el sistema actualiza el tope individual del reloj, y si el reloj se encontraba descartado por haber superado su tope previo y la nueva puja máxima es mayor o igual a la puja mínima requerida en Catawiki, reactiva el reloj a estado activo (Modo Patrulla o Modo Asalto según su tiempo de cierre)
+#### Scenario: Dynamic maximum bid modification and reactivation of viable lots
+- **WHEN** the user modifies the maximum bid of an existing watch in the Excel file
+- **THEN** the system updates the watch's individual ceiling, and if the watch was discarded for exceeding its prior ceiling and the new maximum bid is greater than or equal to the minimum required bid on Catawiki, reactivates the watch to active state (Patrol Mode or Assault Mode depending on its closing time)
 
-#### Scenario: Eliminación de relojes del Excel durante la ejecución
-- **WHEN** el usuario elimina una fila o vacía la URL de un reloj en el fichero Excel
-- **THEN** el sistema cancela el seguimiento del reloj, detiene de forma ordenada cualquier tarea de asalto dedicada a ese lote, libera su presupuesto comprometido en el Ledger si no se encuentra adjudicado y lo retira de la cartera activa
+#### Scenario: Deletion of watches from Excel during execution
+- **WHEN** the user deletes a row or empties the URL of a watch in the Excel file
+- **THEN** the system cancels tracking for the watch, orderly halts any dedicated assault task for that lot, releases its committed budget in the Ledger if not awarded, and removes it from the active portfolio
 
-#### Scenario: Tolerancia a bloqueo de lectura por edición simultánea en Excel
-- **WHEN** el orquestador intenta leer el fichero Excel para verificar cambios mientras el usuario lo mantiene abierto y bloqueado para guardado
-- **THEN** el sistema tolera el error puntual de compartición de archivos en Windows (PermissionError/OSError) manteniendo intacto el estado en memoria y reintentando la lectura en la siguiente verificación
+#### Scenario: Tolerance to read locks from concurrent editing in Excel
+- **WHEN** the orchestrator attempts to read the Excel file to verify changes while the user keeps it open and locked for saving
+- **THEN** the system tolerates the transient file sharing error on Windows (PermissionError/OSError), keeping the in-memory state intact and retrying the read in the next check
 
-### Requirement: Reporte de estado de subasta y métricas por reloj
-El sistema SHALL escribir y mantener actualizadas en el fichero Excel las columnas de control de cada reloj: título del lote, hora de cierre, estado de la subasta, última puja propia, puja actual o ganadora, estado del precio de reserva y techo dinámico asignado.
+### Requirement: Reporting auction status and metrics per watch
+The system SHALL write and keep updated in the Excel file the control columns for each watch: lot title, closing time, auction status, own last bid, current or winning bid, reserve price status, and assigned dynamic ceiling.
 
-#### Scenario: Actualización de estado tras realizar una puja
-- **WHEN** el agente ejecuta una puja válida en Catawiki sobre un reloj de la lista
-- **THEN** el sistema actualiza la fila correspondiente en el Excel reflejando el importe en "Mi Última Puja", la puja actual del lote y el estado "LIDER" o el que corresponda
+#### Scenario: Status update after placing a bid
+- **WHEN** the agent executes a valid bid on Catawiki for a watch in the list
+- **THEN** the system updates the corresponding row in Excel reflecting the amount in "Mi Última Puja", the lot's current bid, and "LIDER" status or applicable status
 
-#### Scenario: Registro de resultado final de la subasta
-- **WHEN** una subasta finaliza definitivamente tras agotar su tiempo y prórrogas
-- **THEN** el sistema escribe en el Excel el estado final ("GANADO", "PERDIDO: Superó Máximo", "PERDIDO: Sin Presupuesto" o "NO ADJUDICADO: Reserva No Alcanzada") junto con el precio de cierre
+#### Scenario: Recording final auction outcome
+- **WHEN** an auction concludes definitively after exhausting its time and extensions
+- **THEN** the system writes the final status to Excel ("GANADO", "PERDIDO: Superó Máximo", "PERDIDO: Sin Presupuesto", or "NO ADJUDICADO: Reserva No Alcanzada") along with the closing price
 
-#### Scenario: Preservación de título y estado activo ante fallo transitorio de consulta
-- **WHEN** la consulta a Catawiki sobre un lote activo falla temporalmente por degradación de servicio o error de red
-- **THEN** el sistema preserva en el Excel el título legítimo previamente registrado y el estado activo del reloj, anotando la incidencia de reintento en "Notas / Último Evento" sin marcar la subasta como "PERDIDO" ni cerrar el lote
+#### Scenario: Preservation of title and active status on transient query failure
+- **WHEN** querying Catawiki for an active lot fails temporarily due to service degradation or network error
+- **THEN** the system preserves in Excel the legitimate title previously recorded and the active status of the watch, noting the retry event in "Notas / Último Evento" without marking the auction as "PERDIDO" or closing the lot
 
-### Requirement: Reporte de contabilidad del presupuesto global en Excel
-El sistema SHALL actualizar en la cabecera del fichero Excel el desglose del presupuesto global: importe gastado en firme (relojes ganados), importe comprometido en vuelo (relojes activos donde el usuario es líder) y saldo disponible.
+### Requirement: Reporting global budget accounting in Excel
+The system SHALL update in the header of the Excel file the global budget breakdown: firmly spent amount (won watches), committed in-flight amount (active watches where the user is leader), and available balance.
 
-#### Scenario: Reflejo de presupuesto comprometido y disponible
-- **WHEN** el usuario pasa a ser el máximo pujador provisional en una subasta activa o gana un lote
-- **THEN** el sistema recalcula y actualiza en el Excel las celdas de presupuesto gastado, comprometido y disponible
+#### Scenario: Reflection of committed and available budget
+- **WHEN** the user becomes the provisional highest bidder in an active auction or wins a lot
+- **THEN** the system recalculates and updates the spent, committed, and available budget cells in Excel
 
-### Requirement: Escritura en segundo plano tolerante a bloqueo de archivo
-El sistema SHALL encolar en memoria las actualizaciones pendientes hacia el fichero Excel cuando el archivo esté bloqueado por otro proceso en el sistema operativo, sin retrasar ni interrumpir la monitorización ni las pujas en curso.
+### Requirement: Lock-tolerant background writing
+The system SHALL queue pending updates to the Excel file in memory when the file is locked by another process in the operating system, without delaying or interrupting active monitoring or ongoing bidding.
 
-#### Scenario: Usuario abre el Excel durante una subasta activa
-- **WHEN** el agente intenta guardar un cambio de estado en el fichero Excel mientras el usuario lo tiene abierto y bloqueado para escritura
-- **THEN** el sistema conserva el estado actualizado en memoria, continúa ejecutando pujas con normalidad y persiste los cambios pendientes automáticamente en cuanto el archivo vuelve a estar libre
+#### Scenario: User opens Excel during an active auction
+- **WHEN** the agent attempts to save a status change to the Excel file while the user has it open and locked for writing
+- **THEN** the system retains the updated state in memory, continues executing bids normally, and automatically persists pending changes as soon as the file becomes unlocked

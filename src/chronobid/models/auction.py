@@ -1,4 +1,4 @@
-"""Modelos de dominio para lotes de relojes, estados de subasta y presupuesto."""
+"""Domain models for watch lots, auction states, and budget."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ ERROR_TITLE_PHRASES: tuple[str, ...] = (
 
 
 class AuctionStatus(str, Enum):
-    """Estados posibles de un lote de reloj en Catawiki."""
+    """Possible statuses for a watch lot on Catawiki."""
 
     PENDING = "PENDIENTE"
     PATROL = "PATRULLA"
@@ -36,12 +36,12 @@ class AuctionStatus(str, Enum):
     LOST_OTHER = "PERDIDO"
     VALIDATION_ERROR = "ERROR: Datos Inválidos"
 
-    # Alias semántico para referencias de poda en cartera
+    # Semantic alias for portfolio pruning references
     DESCARTADO = "PERDIDO: Superó Máximo"
 
     @property
     def is_terminal(self) -> bool:
-        """Indica si la subasta o el seguimiento de este lote ha finalizado."""
+        """Indicates whether the auction or tracking for this lot has finished."""
         return self in {
             AuctionStatus.WON,
             AuctionStatus.DISCARDED_MAX_EXCEEDED,
@@ -53,12 +53,12 @@ class AuctionStatus(str, Enum):
 
     @property
     def is_active(self) -> bool:
-        """Indica si el lote sigue activo y elegible para seguimiento."""
+        """Indicates whether the lot is still active and eligible for tracking."""
         return not self.is_terminal
 
 
 class ReserveStatus(str, Enum):
-    """Estado del precio de reserva de un lote en Catawiki."""
+    """Reserve price status of a lot on Catawiki."""
 
     UNKNOWN = "DESCONOCIDA"
     NO_RESERVE = "SIN RESERVA"
@@ -67,13 +67,13 @@ class ReserveStatus(str, Enum):
 
     @property
     def is_satisfied(self) -> bool:
-        """Devuelve True si no existe precio de reserva pendiente de alcanzar."""
+        """Returns True if there is no pending unmet reserve price."""
         return self in {ReserveStatus.NO_RESERVE, ReserveStatus.MET}
 
 
 @dataclass(frozen=True)
 class GlobalBudgetState:
-    """Instantánea inmutable de la contabilidad del presupuesto global en euros."""
+    """Immutable snapshot of global budget accounting in euros."""
 
     global_budget_eur: int
     spent_eur: int = 0
@@ -94,17 +94,17 @@ class GlobalBudgetState:
 
     @property
     def available_eur(self) -> int:
-        """Saldo disponible actual: Global - Gastado - Comprometido como líder."""
+        """Current available balance: Global - Spent - Committed as leader."""
         return self.global_budget_eur - self.spent_eur - self.committed_leader_eur
 
     def can_afford_delta(self, delta_eur: int) -> bool:
-        """Comprueba si un desembolso adicional cabe en el presupuesto disponible."""
+        """Checks whether an additional disbursement fits within available budget."""
         return 0 <= delta_eur <= self.available_eur
 
 
 @dataclass(frozen=True)
 class BidDecision:
-    """Resultado de una evaluación táctica de puja para un lote activo."""
+    """Result of a tactical bid evaluation for an active lot."""
 
     should_bid: bool
     bid_amount_eur: int | None = None
@@ -126,7 +126,7 @@ class BidDecision:
 
 
 def is_valid_catawiki_url(url: str) -> bool:
-    """Valida que una cadena sea una URL HTTP(S) válida de lote."""
+    """Validates that a string is a valid HTTP(S) lot URL."""
     if not url or not isinstance(url, str):
         return False
     parsed = urlparse(url.strip())
@@ -136,7 +136,7 @@ def is_valid_catawiki_url(url: str) -> bool:
 
 
 def extract_lot_id(url: str, fallback_row: int | None = None) -> str:
-    """Extrae un identificador legible del lote a partir de su URL de Catawiki."""
+    """Extracts a readable lot identifier from its Catawiki URL."""
     if url:
         cleaned = url.strip().rstrip("/")
         parts = [p for p in cleaned.split("/") if p]
@@ -153,7 +153,7 @@ def extract_lot_id(url: str, fallback_row: int | None = None) -> str:
 
 @dataclass
 class WatchLot:
-    """Entidad de dominio que representa un reloj candidato y su estado en tiempo real."""
+    """Domain entity representing a candidate watch and its real-time state."""
 
     lot_id: str
     url: str
@@ -183,7 +183,7 @@ class WatchLot:
             self.dynamic_ceiling_eur = self.max_bid_eur
 
     def validate_inputs(self) -> bool:
-        """Verifica que la URL sea válida y que la puja máxima limpia sea > 0."""
+        """Verifies that the URL is valid and the clean maximum bid is > 0."""
         if not is_valid_catawiki_url(self.url):
             return False
         if not isinstance(self.max_bid_eur, int) or isinstance(self.max_bid_eur, bool):
@@ -192,7 +192,7 @@ class WatchLot:
 
     @property
     def is_viable(self) -> bool:
-        """Indica si el lote sigue vivo y dentro del presupuesto máximo individual."""
+        """Indicates whether the lot is still alive and within individual maximum budget."""
         if self.status.is_terminal or self.is_closed:
             return False
         if not self.is_leader and self.next_min_bid_eur > self.max_bid_eur:
@@ -201,13 +201,13 @@ class WatchLot:
 
     @property
     def effective_ceiling_eur(self) -> int:
-        """Devuelve el techo efectivo nunca superior a la puja máxima limpia del lote."""
+        """Returns the effective ceiling, never exceeding the lot's clean maximum bid."""
         if self.dynamic_ceiling_eur <= 0:
             return max(0, self.max_bid_eur)
         return min(self.max_bid_eur, self.dynamic_ceiling_eur)
 
     def can_bid_amount(self, amount_eur: int) -> bool:
-        """Verifica el invariante estricto de puja limpia respecto al máximo y techo dinámico."""
+        """Verifies the strict clean bid invariant regarding maximum and dynamic ceiling."""
         if self.status.is_terminal or self.is_closed:
             return False
         if amount_eur <= 0:
@@ -219,7 +219,7 @@ class WatchLot:
         return True
 
     def record_own_bid(self, amount_eur: int, reserve_status: ReserveStatus | None = None) -> None:
-        """Registra una puja ejecutada por el propio agente respetando los invariantes."""
+        """Records a bid placed by the agent respecting invariants."""
         if not self.can_bid_amount(amount_eur):
             raise ValueError(
                 f"Puja inválida de {amount_eur} € para el lote {self.lot_id} "
@@ -245,7 +245,7 @@ class WatchLot:
         title: str | None = None,
         closing_time: datetime | None = None,
     ) -> AuctionStatus:
-        """Actualiza el estado del lote a partir de una lectura en vivo de Catawiki."""
+        """Updates lot status from a live Catawiki reading."""
         if self.status == AuctionStatus.VALIDATION_ERROR:
             return self.status
 
@@ -301,7 +301,7 @@ class WatchLot:
                     self.notes = f"Subasta cerrada en {self.current_bid_eur} €"
             return self.status
 
-        # Subasta aún abierta
+        # Auction still open
         if not self.is_leader and self.next_min_bid_eur > self.max_bid_eur:
             self.status = AuctionStatus.DISCARDED_MAX_EXCEEDED
             self.notes = (

@@ -1,4 +1,4 @@
-"""Cliente Chrome DevTools Protocol (CDP) y verificador de sesión autenticada en Catawiki."""
+"""Chrome DevTools Protocol (CDP) client and authenticated session verifier on Catawiki."""
 
 from __future__ import annotations
 
@@ -28,11 +28,11 @@ AUTH_DOM_SELECTORS: tuple[str, ...] = (
 
 
 class BrowserConnectionError(RuntimeError):
-    """Error lanzado cuando no es posible enlazar con el navegador por CDP o se pierde la conexión."""
+    """Error raised when attaching to the browser via CDP fails or connection is lost."""
 
 
 class SessionNotAuthenticatedError(RuntimeError):
-    """Error lanzado cuando el navegador está conectado pero no hay sesión iniciada en Catawiki."""
+    """Error raised when the browser is connected but there is no active session on Catawiki."""
 
 
 def build_browser_launch_command(
@@ -42,8 +42,8 @@ def build_browser_launch_command(
     user_data_dir: str | Path | None = None,
 ) -> str:
     """
-    Genera el comando de PowerShell en Windows para abrir Chrome o Edge con el puerto
-    de depuración remota habilitado (CDP) y un perfil persistente.
+    Generates PowerShell command on Windows to launch Chrome or Edge with
+    remote debugging port enabled (CDP) and a persistent profile.
     """
     profile_dir = (
         str(user_data_dir)
@@ -63,8 +63,8 @@ def build_browser_launch_command(
 
 class CDPBrowserClient:
     """
-    Gestiona la conexión vía Chrome DevTools Protocol (CDP) sobre el navegador
-    real del usuario y verifica que exista una sesión autenticada en Catawiki.
+    Manages connection via Chrome DevTools Protocol (CDP) to the user's
+    real browser and verifies an authenticated session on Catawiki.
     """
 
     def __init__(
@@ -81,14 +81,14 @@ class CDPBrowserClient:
 
     @property
     def is_connected(self) -> bool:
-        """Devuelve True si el enlace CDP con el navegador está activo."""
+        """Returns True if the CDP link to the browser is active."""
         if self._browser is None:
             return False
         return bool(self._browser.is_connected())
 
     @property
     def context(self) -> BrowserContext:
-        """Devuelve el contexto activo del navegador o lanza BrowserConnectionError."""
+        """Returns the active browser context or raises BrowserConnectionError."""
         if not self.is_connected or self._context is None:
             raise BrowserConnectionError(
                 f"El navegador no está conectado en {self.cdp_url}. "
@@ -97,7 +97,7 @@ class CDPBrowserClient:
         return self._context
 
     async def connect(self) -> BrowserContext:
-        """Enlaza con el navegador del usuario a través del endpoint CDP configurado."""
+        """Attaches to the user browser through the configured CDP endpoint."""
         try:
             if self._playwright is None:
                 self._playwright = await async_playwright().start()
@@ -120,12 +120,12 @@ class CDPBrowserClient:
         require_auth: bool = True,
     ) -> bool:
         """
-        Verifica que el navegador siga conectado y que la sesión del usuario en Catawiki
-        esté autenticada (mediante cookies de sesión o elementos DOM de usuario autenticado).
+        Verifies that the browser is connected and that the user session on Catawiki
+        is authenticated (via session cookies or authenticated user DOM elements).
         """
         ctx = self.context
 
-        # 1. Comprobar cookies del dominio catawiki.com
+        # 1. Check cookies for catawiki.com domain
         try:
             cookies: list[dict[str, Any]] = await ctx.cookies("https://www.catawiki.com")
         except Exception as exc:
@@ -139,7 +139,7 @@ class CDPBrowserClient:
             if name in AUTH_COOKIE_NAMES and value and value.lower() not in {"false", "0", "null"}:
                 return True
 
-        # 2. Comprobar indicadores DOM en la página activa o en las pestañas abiertas de Catawiki
+        # 2. Check DOM indicators on active page or open Catawiki tabs
         pages_to_check: list[Page] = []
         if page is not None:
             pages_to_check.append(page)
@@ -165,7 +165,7 @@ class CDPBrowserClient:
         return False
 
     async def new_page(self) -> Page:
-        """Abre una nueva pestaña dentro del contexto autenticado del usuario."""
+        """Opens a new tab within the user's authenticated context."""
         ctx = self.context
         try:
             return await ctx.new_page()
@@ -175,7 +175,7 @@ class CDPBrowserClient:
             ) from exc
 
     async def close(self) -> None:
-        """Cierra el cliente Playwright local sin cerrar las pestañas del usuario."""
+        """Closes the local Playwright client without closing the user's browser tabs."""
         self._context = None
         self._browser = None
         if self._owns_playwright and self._playwright is not None:

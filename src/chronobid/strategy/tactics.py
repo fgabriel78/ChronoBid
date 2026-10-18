@@ -1,4 +1,4 @@
-"""Motor de decisión táctica en los segundos finales, prórrogas (+90s) y escalera de reserva."""
+"""Tactical decision engine in final seconds, overtime extensions (+90s), and reserve ladder."""
 
 from __future__ import annotations
 
@@ -16,13 +16,13 @@ from chronobid.strategy.optimizer import PortfolioOptimizer
 
 class TacticalBiddingEngine:
     """
-    Evalúa el estado en tiempo real de un lote y decide si se debe enviar
-    el siguiente escalón mínimo de puja respetando:
-      1. Invisibilidad táctica hasta `< snipe_window_seconds` (25s por defecto).
-      2. Puja estrictamente por el siguiente incremento mínimo de Catawiki.
-      3. Contraataque en bucles de prórroga (+90s) si un rival supera nuestra puja.
-      4. Escalera paso a paso para desbloquear el precio de reserva oculto cuando ya
-         somos líderes en los últimos 25s pero persiste el aviso de reserva no alcanzada.
+    Evaluates real-time state of a lot and decides whether to submit
+    the next minimum bid step respecting:
+      1. Tactical invisibility until `< snipe_window_seconds` (25s by default).
+      2. Strictly bidding the next minimum increment on Catawiki.
+      3. Counter-attacking in overtime extension loops (+90s) if a rival outbids us.
+      4. Step-by-step ladder to unlock hidden reserve price when already
+         leading in the final 25s but unmet reserve notice persists.
     """
 
     def __init__(
@@ -44,8 +44,8 @@ class TacticalBiddingEngine:
         dynamic_ceiling_eur: int | None = None,
     ) -> BidDecision:
         """
-        Evalúa de forma pura qué acción táctica corresponde tomar para `lot`
-        dado su `dynamic_ceiling_eur`.
+        Purely evaluates what tactical action to take for `lot`
+        given its `dynamic_ceiling_eur`.
         """
         raw_ceiling = (
             dynamic_ceiling_eur
@@ -77,7 +77,7 @@ class TacticalBiddingEngine:
                 dynamic_ceiling_eur=effective_ceiling,
             )
 
-        # Caso 1: El usuario NO es el máximo pujador actual
+        # Case 1: User is NOT the current highest bidder
         if not lot.is_leader:
             if next_min > lot.max_bid_eur:
                 lot.status = AuctionStatus.DISCARDED_MAX_EXCEEDED
@@ -128,7 +128,7 @@ class TacticalBiddingEngine:
                 dynamic_ceiling_eur=effective_ceiling,
             )
 
-        # Caso 2: El usuario YA es el líder provisional
+        # Case 2: User is ALREADY the provisional leader
         if lot.reserve_status != ReserveStatus.NOT_MET:
             return BidDecision(
                 should_bid=False,
@@ -136,7 +136,7 @@ class TacticalBiddingEngine:
                 dynamic_ceiling_eur=effective_ceiling,
             )
 
-        # Es líder pero el precio de reserva NO se ha alcanzado -> Escalera en últimos 25s
+        # Is leader but reserve price has NOT been met -> Ladder in last 25s
         if lot.seconds_remaining > self.snipe_window_seconds:
             return BidDecision(
                 should_bid=False,
@@ -178,13 +178,13 @@ class TacticalBiddingEngine:
         ledger: BudgetLedger,
     ) -> None:
         """
-        Reconcilia de forma atómica el estado contable de `lot` en `BudgetLedger`
-        tras aplicar un snapshot de mercado (tanto en Modo Patrulla como en Modo Asalto):
-          - Si el lote cerró como GANADO, consolida el gasto en firme.
-          - Si el lote cerró sin ganarse o quedó en estado terminal, libera cualquier compromiso.
-          - Si el lote sigue abierto y `lot.is_leader` es True, sincroniza `lot.current_bid_eur`
-            como saldo comprometido de líder.
-          - Si el lote sigue abierto y `lot.is_leader` es False, libera cualquier compromiso previo.
+        Atomically reconciles accounting state of `lot` in `BudgetLedger`
+        after applying a market snapshot (both in Patrol Mode and Assault Mode):
+          - If the lot closed as WON, consolidates firm expenditure.
+          - If the lot closed without being won or reached terminal status, releases any commitment.
+          - If the lot remains open and `lot.is_leader` is True, synchronizes `lot.current_bid_eur`
+            as leader committed balance.
+          - If the lot remains open and `lot.is_leader` is False, releases any prior commitment.
         """
         if lot.is_closed or lot.status.is_terminal:
             if lot.status == AuctionStatus.WON:
@@ -224,16 +224,16 @@ class TacticalBiddingEngine:
         optimizer: PortfolioOptimizer,
     ) -> BidDecision:
         """
-        Procesa un tick completo de Modo Asalto para `lot`:
-          1. Si el lote ha cerrado, consolida GANADO o libera saldo si no fue adjudicado.
-          2. Sincroniza el compromiso si el usuario es líder o lo libera al instante si fue superado.
-          3. Calcula el Techo Dinámico E_i con `PortfolioOptimizer`.
-          4. Evalúa la decisión táctica; si procede pujar, intenta reservar el saldo
-             atómico en `BudgetLedger` antes de autorizar el envío de la puja.
+        Processes a full Assault Mode tick for `lot`:
+          1. If the lot has closed, consolidates WON or releases balance if not awarded.
+          2. Synchronizes commitment if user is leader or instantly releases if outbid.
+          3. Computes Dynamic Ceiling E_i using `PortfolioOptimizer`.
+          4. Evaluates tactical decision; if bidding is due, attempts to reserve atomic
+             balance in `BudgetLedger` before authorizing bid submission.
         """
         all_lots_list = list(all_lots)
 
-        # 1 y 2. Reconciliar estado de cierre o liderazgo actual con BudgetLedger
+        # 1 and 2. Reconcile closing state or current leadership with BudgetLedger
         await self.reconcile_lot_with_ledger(lot, ledger)
 
         if lot.is_closed or lot.status.is_terminal:
@@ -243,15 +243,15 @@ class TacticalBiddingEngine:
                 dynamic_ceiling_eur=lot.dynamic_ceiling_eur,
             )
 
-        # 3. Calcular Techo Dinámico E_i
+        # 3. Compute Dynamic Ceiling E_i
         ceiling = optimizer.compute_dynamic_ceiling(lot, all_lots_list, ledger)
 
-        # 4. Evaluar táctica
+        # 4. Evaluate tactics
         decision = self.evaluate_lot(lot, dynamic_ceiling_eur=ceiling)
         if not decision.should_bid or decision.bid_amount_eur is None:
             return decision
 
-        # 5. Reservar saldo de forma atómica antes de permitir la puja en UI
+        # 5. Atomically reserve balance before allowing bid submission in UI
         reserved = await ledger.try_reserve(
             lot.lot_id,
             decision.bid_amount_eur,

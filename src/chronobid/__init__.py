@@ -1,3 +1,3 @@
-"""ChronoBid: Agente autónomo de pujas en Catawiki."""
+"""ChronoBid: Autonomous Catawiki bidding agent."""
 
 __version__ = "1.1.1"

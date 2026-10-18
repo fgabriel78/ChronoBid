@@ -1,4 +1,4 @@
-"""Tests para CDPBrowserClient: conexión exitosa, caída de navegador y sesión no autenticada."""
+"""Tests for CDPBrowserClient: successful connection, browser drop, and unauthenticated session."""
 
 from typing import Any
 
@@ -108,7 +108,7 @@ async def test_cdp_client_raises_when_browser_unavailable_or_drops() -> None:
     with pytest.raises(BrowserConnectionError, match="No se pudo conectar"):
         await client_fail.connect()
 
-    # Conexión que se cae después de enlazar
+    # Connection drops after attaching
     ctx = FakeBrowserContext(cookies=[{"name": "cw_user", "value": "123"}])
     browser = FakeBrowser(ctx, connected=True)
     pw_drop = FakePlaywright(FakeChromium(browser=browser))

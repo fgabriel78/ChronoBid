@@ -1,4 +1,4 @@
-"""Interfaz de línea de comandos (CLI) con panel en vivo Rich para ChronoBid."""
+"""Command line interface (CLI) with Rich live dashboard for ChronoBid."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from chronobid.strategy.ledger import BudgetLedger
 
 
 def build_dashboard_renderable(lots: list[WatchLot], ledger: BudgetLedger) -> Group:
-    """Construye el panel de presupuesto y la tabla de relojes para Rich."""
+    """Builds budget panel and watch table for Rich."""
     snap = ledger.snapshot()
     budget_summary = (
         f"[bold cyan]Presupuesto Global:[/bold cyan] {snap.global_budget_eur} €   |   "

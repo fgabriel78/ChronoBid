@@ -2,46 +2,46 @@
 
 ## Purpose
 
-Gobierna la contabilidad atómica del presupuesto global en euros y la estrategia de optimización dinámica de cartera para maximizar el número total de relojes ganados sin exceder nunca los límites individuales ni el presupuesto global.
+Governs the atomic accounting of the global budget in euros and the dynamic portfolio optimization strategy to maximize the total number of watches won without ever exceeding individual limits or the global budget.
 
 ## Requirements
 
-### Requirement: Contabilidad atómica de presupuesto en vuelo (Ledger)
-El sistema SHALL mantener una contabilidad atómica en tiempo real donde el presupuesto disponible sea igual al presupuesto global menos la suma de relojes ya ganados y menos la suma de las pujas activas en las que el usuario es actualmente el máximo pujador provisional.
+### Requirement: Atomic in-flight budget accounting (Ledger)
+The system SHALL maintain real-time atomic accounting where available budget equals the global budget minus the sum of already won watches and minus the sum of active bids where the user is currently the provisional highest bidder.
 
-#### Scenario: Bloqueo de saldo al convertirse en máximo pujador provisional
-- **WHEN** el agente realiza una puja y pasa a ser el líder provisional de un reloj por un importe $X$
-- **THEN** el sistema descuenta $X$ (o el incremento diferencial si ya era líder por un importe menor) del presupuesto disponible de forma atómica antes de permitir pujas en otros relojes concurrentes
+#### Scenario: Balance locking upon becoming provisional highest bidder
+- **WHEN** the agent places a bid and becomes the provisional leader of a watch for an amount $X$
+- **THEN** the system atomically deducts $X$ (or the differential increase if already leader for a smaller amount) from the available budget before allowing bids on other concurrent watches
 
-#### Scenario: Sincronización de saldo comprometido al detectar liderazgo en lectura de mercado
-- **WHEN** el sistema consulta un lote activo en Modo Patrulla o Modo Asalto y detecta que el usuario es el máximo pujador provisional por un importe $X > 0$ (incluyendo pujas manuales previas en Catawiki o sesiones reiniciadas)
-- **THEN** el sistema actualiza de forma atómica el importe comprometido como líder para ese reloj a $X$ y descuenta dicho compromiso del presupuesto disponible
+#### Scenario: Committed balance synchronization upon detecting leadership in market read
+- **WHEN** the system inspects an active lot in Patrol Mode or Assault Mode and detects that the user is the provisional highest bidder for an amount $X > 0$ (including previous manual bids on Catawiki or restarted sessions)
+- **THEN** the system atomically updates the committed amount as leader for that watch to $X$ and deducts this commitment from the available budget
 
-#### Scenario: Liberación inmediata de saldo al ser superado por otro postor
-- **WHEN** otro usuario supera la puja del usuario en una subasta activa, tanto durante el Modo Patrulla como durante el Modo Asalto
-- **THEN** el sistema libera al instante el importe previamente comprometido en ese reloj y lo reincorpora al presupuesto disponible
+#### Scenario: Immediate balance release upon being outbid by another bidder
+- **WHEN** another user outbids the user in an active auction, both during Patrol Mode and during Assault Mode
+- **THEN** the system instantly releases the amount previously committed to that watch and restores it to the available budget
 
-### Requirement: Invariante estricto de techo individual y presupuesto global
-El sistema MUST rechazar cualquier intento de puja cuyo importe supere la puja máxima limpia definida en el Excel para ese reloj o cuyo desembolso adicional supere el presupuesto global disponible en ese instante.
+### Requirement: Strict individual ceiling and global budget invariant
+The system MUST reject any bid attempt whose amount exceeds the clean maximum bid defined in Excel for that watch or whose additional disbursement exceeds the available global budget at that instant.
 
-#### Scenario: Intento de puja que excedería el presupuesto disponible por subastas solapadas
-- **WHEN** dos relojes se encuentran en cierre simultáneo y la puja requerida en el segundo reloj supera el presupuesto disponible tras descontar la puja líder activa en el primer reloj
-- **THEN** el sistema bloquea la puja en el segundo reloj para garantizar que la suma total de compromisos nunca supere el presupuesto global
+#### Scenario: Bid attempt that would exceed available budget due to overlapping auctions
+- **WHEN** two watches are closing simultaneously and the required bid on the second watch exceeds the available budget after deducting the active winning bid on the first watch
+- **THEN** the system blocks the bid on the second watch to guarantee that the total sum of commitments never exceeds the global budget
 
-### Requirement: Poda automática de relojes fuera de precio
-El sistema SHALL descartar automáticamente de la cartera activa cualquier reloj cuya siguiente puja mínima requerida en Catawiki supere la puja máxima limpia indicada por el usuario en el Excel.
+### Requirement: Automatic pruning of overpriced watches
+The system SHALL automatically discard from the active portfolio any watch whose next minimum required bid on Catawiki exceeds the clean maximum bid specified by the user in Excel.
 
-#### Scenario: Reloj supera el máximo antes de entrar en el minuto final
-- **WHEN** durante la monitorización se detecta que el siguiente escalón mínimo de puja de un reloj es mayor que su puja máxima en el Excel
-- **THEN** el sistema marca el reloj como descartado por superar el máximo y lo excluye del cálculo de reserva de presupuesto para futuros lotes
+#### Scenario: Watch exceeds maximum before entering final minute
+- **WHEN** during monitoring it is detected that the next minimum bid increment of a watch is greater than its maximum bid in Excel
+- **THEN** the system marks the watch as discarded for exceeding maximum and excludes it from the budget reservation calculation for future lots
 
-### Requirement: Cálculo de techo dinámico para maximizar el número de relojes
-El sistema SHALL calcular dinámicamente un techo efectivo ($E_i \le M_i$) para cada subasta activa evaluando el coste actual y la holgura de precio de los demás relojes viables pendientes, reservando presupuesto cuando una combinación de relojes futuros de alta viabilidad permita adquirir un mayor número de unidades con el mismo saldo disponible.
+### Requirement: Dynamic ceiling calculation to maximize number of watches
+The system SHALL dynamically calculate an effective ceiling ($E_i \le M_i$) for each active auction by evaluating the current cost and price headroom of remaining viable pending watches, reserving budget when a combination of highly viable future watches allows acquiring a greater number of units with the same available balance.
 
-#### Scenario: Reserva de presupuesto ante dos relojes futuros baratos y con alta holgura
-- **WHEN** un reloj activo requiere consumir un importe que dejaría sin saldo suficiente a una combinación de dos o más relojes futuros viables que cuentan con amplio margen bajo sus respectivos máximos
-- **THEN** el sistema reduce el techo dinámico efectivo del reloj activo para preservar el saldo necesario para la combinación que maximiza el número de relojes
+#### Scenario: Budget reservation for two cheap future watches with high headroom
+- **WHEN** an active watch requires consuming an amount that would leave insufficient balance for a combination of two or more viable future watches that have ample margin under their respective maximums
+- **THEN** the system reduces the effective dynamic ceiling of the active watch to preserve the balance required for the combination that maximizes the number of watches
 
-#### Scenario: Liberación del techo completo cuando los relojes futuros pierden viabilidad
-- **WHEN** los relojes futuros pendientes suben de precio y reducen su margen de holgura o quedan descartados
-- **THEN** el sistema eleva automáticamente el techo dinámico del reloj activo hasta el máximo permitido por su tope individual ($M_i$) y el presupuesto disponible
+#### Scenario: Full ceiling release when future watches lose viability
+- **WHEN** remaining pending future watches rise in price and reduce their headroom margin or are discarded
+- **THEN** the system automatically raises the dynamic ceiling of the active watch up to the maximum permitted by its individual ceiling ($M_i$) and the available budget

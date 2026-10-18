@@ -2,104 +2,104 @@
 
 ## Purpose
 
-Proporciona la interfaz de interacción con Catawiki sobre una sesión de navegador autenticada para extraer el estado en tiempo real de las subastas de relojes y ejecutar pujas tácticas en los segundos finales y prórrogas.
+Provides the interaction interface with Catawiki over an authenticated browser session to extract real-time watch auction state and execute tactical bids in the final seconds and overtime extensions.
 
 ## Requirements
 
-### Requirement: Conexión a sesión de navegador autenticada
-El sistema SHALL conectarse a una instancia de navegador ya abierta y autenticada por el usuario en Catawiki, reutilizando sus credenciales, cookies de sesión y huella de navegador sin solicitar contraseñas ni requerir inicio de sesión automatizado.
+### Requirement: Connection to authenticated browser session
+The system SHALL connect to an existing browser instance already opened and authenticated by the user on Catawiki, reusing session credentials, cookies, and browser fingerprint without prompting for passwords or requiring automated login.
 
-#### Scenario: Conexión exitosa al navegador del usuario
-- **WHEN** el agente se inicia y el navegador del usuario está disponible con una sesión activa en Catawiki
-- **THEN** el sistema enlaza con el navegador y verifica que la sesión del usuario está autenticada antes de operar
+#### Scenario: Successful connection to user browser
+- **WHEN** the agent starts and the user browser is available with an active session on Catawiki
+- **THEN** the system attaches to the browser and verifies that the user session is authenticated before operating
 
-#### Scenario: Navegador no disponible o sesión no iniciada
-- **WHEN** el agente no puede enlazar con el navegador o detecta que el usuario no ha iniciado sesión en Catawiki
-- **THEN** el sistema notifica claramente el requisito de conexión/autenticación y detiene el envío de pujas hasta que se restablezca
+#### Scenario: Browser unavailable or session not logged in
+- **WHEN** the agent cannot attach to the browser or detects that the user is not logged into Catawiki
+- **THEN** the system clearly notifies the connection/authentication requirement and halts bid submission until restored
 
-### Requirement: Operación diferenciada en Modo Patrulla y Modo Asalto
-El sistema SHALL monitorizar los relojes con cierre lejano (> 5 minutos) mediante una cadencia escalonada y adaptativa según el tiempo restante de cada lote individual (Modo Patrulla) y conmutar a seguimiento continuo en tiempo real (Modo Asalto) cuando falten menos de 5 minutos para el cierre de un reloj viable, garantizando la independencia estricta de sus ritmos de consulta y la minimización del uso de recursos.
+### Requirement: Differentiated operation in Patrol Mode and Assault Mode
+The system SHALL monitor watches with far closing times (> 5 minutes) using an adaptive tiered cadence based on each individual lot's remaining time (Patrol Mode) and switch to continuous real-time tracking (Assault Mode) when less than 5 minutes remain before closing for a viable watch, ensuring strict cadence independence and resource usage minimization.
 
-#### Scenario: Transición de Modo Patrulla a Modo Asalto
-- **WHEN** un reloj viable entra en los últimos 5 minutos previos a su hora de cierre
-- **THEN** el sistema abre o activa el seguimiento dedicado en tiempo real para ese lote con lectura sub-segundo del temporizador, puja actual, condición de líder y aviso de reserva
+#### Scenario: Transition from Patrol Mode to Assault Mode
+- **WHEN** a viable watch enters the last 5 minutes prior to its closing time
+- **THEN** the system opens or activates dedicated real-time tracking for that lot with sub-second timer polling, current bid, leadership status, and reserve price alert
 
-#### Scenario: Cadencia escalonada por tramos temporales en Modo Patrulla
-- **WHEN** un lote activo en Modo Patrulla tiene asignado un tiempo restante conocido superior a 5 minutos
-- **THEN** el sistema aplica una cadencia de revisión individualizada: cada 300 segundos si restan más de 3.600 segundos (> 1 hora), cada 120 segundos si restan entre 900 y 3.600 segundos (15 a 60 minutos), y cada 60 segundos si restan entre 300 y 900 segundos (5 a 15 minutos), evitando consultar el lote mientras no haya vencido su intervalo correspondiente
+#### Scenario: Tiered cadence by time windows in Patrol Mode
+- **WHEN** an active lot in Patrol Mode has a known remaining time greater than 5 minutes
+- **THEN** the system applies an individualized review cadence: every 300 seconds if more than 3,600 seconds remain (> 1 hour), every 120 seconds if between 900 and 3,600 seconds remain (15 to 60 minutes), and every 60 seconds if between 300 and 900 seconds remain (5 to 15 minutes), avoiding lot inspection until its corresponding interval has elapsed
 
-#### Scenario: Prioridad inmediata para lotes pendientes sin consulta previa
-- **WHEN** se incorpora un nuevo lote al catálogo o un lote permanece en estado PENDING sin snapshot previo
-- **THEN** el sistema lo prioriza e incluye inmediatamente en la siguiente ronda de patrulla sin esperar ningún intervalo temporal previo
+#### Scenario: Immediate priority for pending lots without prior query
+- **WHEN** a new lot is added to the catalog or a lot remains in PENDING status without a prior snapshot
+- **THEN** the system prioritizes and immediately includes it in the next patrol round without waiting for any prior time interval
 
-#### Scenario: Anticipación adaptativa al umbral de Modo Asalto
-- **WHEN** un reloj viable en el tramo próximo (5 a 15 minutos) se encuentra a un tiempo restante tal que la siguiente consulta periódica caería por debajo de los 300 segundos
-- **THEN** el sistema ajusta dinámicamente la espera del bucle de patrulla para despertar y consultar el lote en el segundo exacto en que alcanza los 300 segundos restantes, conmutando a Modo Asalto sin demoras
+#### Scenario: Adaptive anticipation of Assault Mode threshold
+- **WHEN** a viable watch in the upcoming window (5 to 15 minutes) has remaining time such that the next periodic poll would fall below 300 seconds
+- **THEN** the system dynamically adjusts the patrol loop sleep to wake up and inspect the lot at the exact second it reaches 300 seconds remaining, transitioning to Assault Mode without delay
 
-#### Scenario: Extracción precisa de puja actual y estado de subasta
-- **WHEN** el sistema consulta un lote en Modo Patrulla o Modo Asalto
-- **THEN** el sistema extrae el importe exacto de la puja actual, calcula el siguiente escalón mínimo conforme a los tramos oficiales de incremento de Catawiki (incluyendo micro-pujas de 1-10 € a +1 €) y clasifica el estado de reserva (MET, NOT_MET o NO_RESERVE) combinando el estado SSR inyectado con los selectores DOM del lote
+#### Scenario: Accurate extraction of current bid and auction status
+- **WHEN** the system inspects a lot in Patrol Mode or Assault Mode
+- **THEN** the system extracts the exact current bid amount, calculates the next minimum bid step according to Catawiki's official increment tiers (including 1-10 € micro-bids at +1 €), and classifies reserve status (MET, NOT_MET, or NO_RESERVE) combining injected SSR state with lot DOM selectors
 
-#### Scenario: Tratamiento de lotes en apertura inicial sin pujas previas
-- **WHEN** un lote activo en consulta no registra ninguna puja previa en su historial o muestra estado inicial de apertura
-- **THEN** el sistema adopta el importe de salida o primer botón de puja rápida como siguiente escalón mínimo admisible sin descartar el lote por comparativa estricta contra una puja actual ficticia, y en cuanto el DOM en vivo o la red reflejen que ya se ha registrado una puja o el liderazgo del usuario en la misma pestaña, deja de forzar la puja actual a cero aunque el estado SSR inicial permanezca sin recargar
+#### Scenario: Handling opening lots without prior bids
+- **WHEN** an active lot under inspection has no prior bids in its history or displays initial opening state
+- **THEN** the system adopts the starting bid or first quick-bid button as the next acceptable minimum step without discarding the lot through strict comparison against a fictitious current bid, and as soon as live DOM or network reflects a registered bid or user leadership in the same tab, stops forcing current bid to zero even if the initial SSR state remains unrefreshed
 
-#### Scenario: Tolerancia a fallo puntual durante la ronda de patrulla
-- **WHEN** la consulta a un lote durante la patrulla devuelve una lectura de error temporal de red o plataforma
-- **THEN** el orquestador mantiene el lote en su estado activo, no propaga valores vacíos o cerrados al modelo y reintenta la lectura en la siguiente ronda de patrulla
+#### Scenario: Transient failure tolerance during patrol round
+- **WHEN** inspecting a lot during patrol returns a temporary network or platform error
+- **THEN** the orchestrator maintains the lot in its active state, does not propagate empty or closed values to the model, and retries the read in the next patrol round
 
-#### Scenario: Independencia de cadencia en Modo Patrulla durante Modo Asalto concurrente
-- **WHEN** uno o más relojes viables se encuentran en seguimiento continuo de Modo Asalto y existen otros relojes viables con cierre superior a 5 minutos
-- **THEN** el sistema mantiene la monitorización de los relojes en Modo Patrulla con consultas espaciadas según el intervalo de patrulla escalonado correspondiente a cada lote, sin acelerar las consultas ni recargar continuamente las pestañas de patrulla debido a los asaltos concurrentes
+#### Scenario: Cadence independence in Patrol Mode during concurrent Assault Mode
+- **WHEN** one or more viable watches are in continuous Assault Mode tracking and other viable watches have closing times greater than 5 minutes
+- **THEN** the system maintains Patrol Mode monitoring with queries spaced according to each lot's tiered patrol interval, without accelerating polls or continuously reloading patrol tabs due to concurrent assaults
 
-#### Scenario: Suspensión de consultas de patrulla cuando todos los lotes activos están en asalto
-- **WHEN** todos los relojes viables activos se encuentran ya en Modo Asalto con seguimiento dedicado
-- **THEN** el sistema suspende las rondas de patrulla y aguarda pasivamente la resolución de las tareas de asalto sin realizar esperas activas de alta frecuencia ni consultas redundantes de mercado
+#### Scenario: Suspension of patrol polls when all active lots are in assault
+- **WHEN** all active viable watches are already in Assault Mode with dedicated tracking
+- **THEN** the system suspends patrol rounds and passively awaits the resolution of assault tasks without high-frequency busy waits or redundant market polls
 
-### Requirement: Resiliencia ante errores transitorios de carga en Catawiki
-El sistema SHALL detectar páginas de error transitorio de Catawiki, respuestas de fallo de plataforma o ausencia de contenedores de subasta, catalogándolas como incidencias temporales sin sobreescribir el título del lote ni forzar el temporizador a cero.
+### Requirement: Resilience against transient loading errors on Catawiki
+The system SHALL detect Catawiki transient error pages, platform failure responses, or missing auction containers, cataloging them as temporary issues without overwriting the lot title or forcing the countdown timer to zero.
 
-#### Scenario: Detección de pantalla de error tipo We can't load this page right now
-- **WHEN** el sistema navega a la URL de un lote y la página muestra encabezados o textos de error como "We can't load this page right now", fallos HTTP 5xx o pantallas sin contenedores de subasta
-- **THEN** el sistema rechaza la extracción como snapshot de mercado inválido, preserva el título y estado previo del lote y evita transicionar la subasta a cerrada o perdida
+#### Scenario: Detection of We can't load this page right now error screen
+- **WHEN** the system navigates to a lot URL and the page displays error headers or text such as "We can't load this page right now", HTTP 5xx errors, or pages without auction containers
+- **THEN** the system rejects the extraction as an invalid market snapshot, preserves the lot's prior title and state, and avoids transitioning the auction to closed or lost
 
-#### Scenario: Preservación de cuenta atrás ausente en lote activo
-- **WHEN** una página de subasta abierta se carga pero los selectores de cuenta atrás no devuelven un valor numérico y no existe texto explícito de lote cerrado
-- **THEN** el sistema registra el tiempo restante como nulo (`None`) en lugar de forzarlo a `0.0`, impidiendo que la subasta sea interpretada como concluida por expiración de tiempo
+#### Scenario: Preservation of missing countdown on active lot
+- **WHEN** an open auction page loads but countdown selectors do not return a numerical value and there is no explicit closed lot text
+- **THEN** the system records remaining time as null (`None`) instead of forcing it to `0.0`, preventing the auction from being interpreted as concluded due to time expiration
 
-### Requirement: Invisibilidad previa y ejecución de puja por incremento mínimo
-El sistema SHALL abstenerse de realizar pujas hasta los últimos segundos configurados del cierre (< 25 segundos) y, al pujar, MUST enviar únicamente el siguiente escalón mínimo de puja exigido por Catawiki sin revelar el precio máximo del usuario a la plataforma.
+### Requirement: Prior invisibility and minimum increment bidding execution
+The system SHALL refrain from placing bids until the configured final seconds before closing (< 25 seconds) and, when bidding, MUST submit only the minimum bid step required by Catawiki without revealing the user's maximum price to the platform.
 
-#### Scenario: Primera entrada en los segundos finales
-- **WHEN** faltan menos de 25 segundos para el cierre de un reloj, el usuario no es el máximo pujador actual y el siguiente escalón mínimo de puja no supera el techo dinámico asignado
-- **THEN** el sistema ejecuta una puja por el importe exacto del siguiente escalón mínimo válido
+#### Scenario: First entry in final seconds
+- **WHEN** less than 25 seconds remain before closing, the user is not the current highest bidder, and the next minimum bid step does not exceed the assigned dynamic ceiling
+- **THEN** the system executes a bid for the exact amount of the next valid minimum step
 
-#### Scenario: Envío de puja mediante botón rápido o campo numérico
-- **WHEN** se ordena el envío del escalón mínimo de puja a la página del lote
-- **THEN** el sistema pulsa el botón de puja rápida si coincide exactamente con el importe o introduce el valor en el campo de puja y pulsa el botón de puja directa (nunca el de fijar puja máxima automática), espera activamente a que se monte el diálogo modal de confirmación de Catawiki, pulsa el botón principal de confirmar puja y aguarda a la actualización del estado antes de extraer la nueva instantánea
+#### Scenario: Bid submission via quick button or numeric field
+- **WHEN** submitting the minimum bid step to the lot page is triggered
+- **THEN** the system clicks the quick-bid button if it matches the exact amount or inputs the value into the bid field and clicks the direct bid button (never the automatic maximum bid button), actively waits for the Catawiki confirmation modal dialog to mount, clicks the primary confirm bid button, and awaits status update before extracting a new snapshot
 
-#### Scenario: Registro condicionado a la aceptación efectiva de la puja
-- **WHEN** finaliza el intento de envío y confirmación de una puja en Modo Asalto y se obtiene la instantánea posterior del lote
-- **THEN** el orquestador registra la puja propia únicamente si la instantánea confirma que el usuario es líder o que la puja actual del mercado ha alcanzado al menos el importe enviado; en caso contrario, libera de inmediato el presupuesto reservado y no marca falsamente el lote como superado
+#### Scenario: Registration conditioned on effective bid acceptance
+- **WHEN** the attempt to submit and confirm a bid in Assault Mode finishes and the post-bid lot snapshot is obtained
+- **THEN** the orchestrator registers its own bid only if the snapshot confirms that the user is leader or that the market current bid has reached at least the submitted amount; otherwise, it immediately releases the reserved budget and does not falsely mark the lot as outbid
 
-### Requirement: Gestión del bucle de prórrogas de +90 segundos
-El sistema SHALL continuar monitorizando el lote tras cualquier extensión de tiempo (+90 segundos) provocada por pujas en el último minuto y contraatacar cuando otro postor supere la puja del usuario, siempre que el nuevo escalón mínimo no exceda el techo dinámico ni el presupuesto disponible.
+### Requirement: Management of +90 second extension loop
+The system SHALL continue monitoring the lot following any time extension (+90 seconds) caused by bids in the final minute and counter-bid when another bidder outbids the user, provided the new minimum step does not exceed the dynamic ceiling or available budget.
 
-#### Scenario: Contraataque durante la prórroga de 90 segundos
-- **WHEN** un competidor supera la puja del usuario durante la ventana de prórroga y el siguiente incremento mínimo está dentro del techo dinámico vigente
-- **THEN** el sistema envía la contrapuja mínima requerida y actualiza la nueva cuenta atrás de cierre
+#### Scenario: Counter-attack during 90-second extension
+- **WHEN** a competitor outbids the user during the extension window and the next minimum increment is within the active dynamic ceiling
+- **THEN** the system submits the required minimum counter-bid and updates the new closing countdown
 
-#### Scenario: Abandono cuando el rival supera el techo permitido
-- **WHEN** la puja necesaria para superar al líder actual excede el techo dinámico o la puja máxima del reloj
-- **THEN** el sistema detiene las pujas sobre ese lote y libera de inmediato cualquier presupuesto previamente comprometido en él
+#### Scenario: Abandonment when rival exceeds permitted ceiling
+- **WHEN** the bid required to surpass the current leader exceeds the dynamic ceiling or the watch's maximum bid
+- **THEN** the system stops bidding on that lot and immediately releases any budget previously committed to it
 
-### Requirement: Desbloqueo escalonado del precio de reserva en los segundos finales
-El sistema SHALL incrementar su propia puja escalón a escalón en los últimos segundos cuando el usuario ya sea el máximo pujador pero la subasta indique que no se ha alcanzado el precio de reserva, deteniéndose inmediatamente en cuanto el aviso de reserva desaparezca o se alcance el techo permitido.
+### Requirement: Tiered reserve price unlocking in final seconds
+The system SHALL increase its own bid step by step in the final seconds when the user is already the highest bidder but the auction indicates the reserve price has not been met, stopping immediately as soon as the reserve alert disappears or the permitted ceiling is reached.
 
-#### Scenario: Reserva desbloqueada antes de agotar el techo
-- **WHEN** el usuario es líder en los últimos 25 segundos con aviso de "precio de reserva no alcanzado" y el sistema sube un escalón mínimo tras el cual desaparece dicho aviso
-- **THEN** el sistema detiene inmediatamente las autopujas adicionales y mantiene la posición ganadora al coste mínimo de desbloqueo
+#### Scenario: Reserve unlocked before exhausting ceiling
+- **WHEN** the user is leader in the final 25 seconds with a "reserve price not met" notice and the system raises a minimum step after which the notice disappears
+- **THEN** the system immediately stops additional self-bids and holds the winning position at minimum unlocking cost
 
-#### Scenario: Reserva por encima del máximo permitido
-- **WHEN** el sistema sube escalones intentando alcanzar la reserva y el siguiente incremento supera la puja máxima del reloj o el techo dinámico disponible
-- **THEN** el sistema deja de autopujar sin superar jamás el límite establecido
+#### Scenario: Reserve above permitted maximum
+- **WHEN** the system raises steps attempting to reach reserve and the next increment exceeds the watch's maximum bid or available dynamic ceiling
+- **THEN** the system stops self-bidding without ever exceeding the established limit

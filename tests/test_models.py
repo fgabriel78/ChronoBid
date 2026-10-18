@@ -1,4 +1,4 @@
-"""Tests unitarios de los modelos de dominio en chronobid.models.auction."""
+"""Unit tests for domain models in chronobid.models.auction."""
 
 import pytest
 
@@ -71,7 +71,7 @@ def test_auction_transitions_patrol_assault_leader_outbid_and_pruning() -> None:
         max_bid_eur=300,
     )
 
-    # Modo Patrulla (> 5 min)
+    # Patrol Mode (> 5 min)
     status = lot.apply_market_snapshot(
         current_bid_eur=120,
         next_min_bid_eur=130,
@@ -82,7 +82,7 @@ def test_auction_transitions_patrol_assault_leader_outbid_and_pruning() -> None:
     assert status == AuctionStatus.PATROL
     assert lot.is_viable is True
 
-    # Transición a Modo Asalto (<= 300s)
+    # Transition to Assault Mode (<= 300s)
     status = lot.apply_market_snapshot(
         current_bid_eur=150,
         next_min_bid_eur=160,
@@ -91,7 +91,7 @@ def test_auction_transitions_patrol_assault_leader_outbid_and_pruning() -> None:
     )
     assert status == AuctionStatus.ASSAULT
 
-    # Pasa a Líder
+    # Becomes leader
     lot.record_own_bid(160)
     status = lot.apply_market_snapshot(
         current_bid_eur=160,
@@ -102,7 +102,7 @@ def test_auction_transitions_patrol_assault_leader_outbid_and_pruning() -> None:
     )
     assert status == AuctionStatus.LEADER
 
-    # Rival supera la puja pero aún dentro de máximo
+    # Rival outbids but still within maximum
     status = lot.apply_market_snapshot(
         current_bid_eur=180,
         next_min_bid_eur=190,
@@ -112,7 +112,7 @@ def test_auction_transitions_patrol_assault_leader_outbid_and_pruning() -> None:
     assert status == AuctionStatus.OUTBID
     assert lot.is_viable is True
 
-    # Rival supera el máximo -> poda automática (PERDIDO: Superó Máximo)
+    # Rival exceeds maximum -> automatic pruning (PERDIDO: Superó Máximo)
     status = lot.apply_market_snapshot(
         current_bid_eur=300,
         next_min_bid_eur=320,
@@ -200,7 +200,7 @@ def test_apply_market_snapshot_rejects_error_titles() -> None:
         max_bid_eur=400,
         title="Seiko - Presage - SPB045J1 - Hombre",
     )
-    # Si llega un título que contiene frase de error, no debe sobreescribir el título original
+    # If an incoming title contains an error phrase, it should not overwrite the original title
     lot.apply_market_snapshot(
         current_bid_eur=200,
         next_min_bid_eur=220,
@@ -240,7 +240,7 @@ def test_apply_market_snapshot_does_not_close_if_closing_time_is_future_without_
         title="Seiko Presage",
         closing_time=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=5),
     )
-    # Lectura anómala con seconds_remaining=0 pero sin is_closed y con closing_time a 5 días
+    # Anomalous reading with seconds_remaining=0 but without is_closed and closing_time 5 days in the future
     status = lot.apply_market_snapshot(
         current_bid_eur=200,
         next_min_bid_eur=220,

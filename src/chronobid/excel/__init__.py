@@ -1,4 +1,4 @@
-"""Lectura y escritura resiliente del archivo Excel de control."""
+"""Resilient read and write operations for the control Excel file."""
 
 from chronobid.excel.sync_worker import ExcelSyncWorker
 from chronobid.excel.workbook_io import (

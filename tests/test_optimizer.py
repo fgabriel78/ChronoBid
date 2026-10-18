@@ -1,4 +1,4 @@
-"""Tests para PortfolioOptimizer: poda en vivo, reserva multi-reloj y techo dinámico."""
+"""Tests for PortfolioOptimizer: live pruning, multi-watch reservation, and dynamic ceiling."""
 
 from chronobid.models.auction import AuctionStatus, WatchLot
 from chronobid.strategy.ledger import BudgetLedger
@@ -32,14 +32,14 @@ def test_optimizer_prunes_lots_exceeding_max_bid() -> None:
 
 def test_optimizer_reserves_budget_for_two_cheap_future_watches_with_high_slack() -> None:
     """
-    Escenario: Presupuesto global = 600 €.
-    Reloj activo 1 tiene máximo M_1 = 550 €.
-    Existen dos relojes futuros baratos y con alta holgura:
-      - Reloj 2: siguiente mínimo = 100 €, máximo = 250 € -> H_2 = 0.60 >= 0.15, C_hat_2 = 145 €
-      - Reloj 3: siguiente mínimo = 120 €, máximo = 300 € -> H_3 = 0.60 >= 0.15, C_hat_3 = 174 €
-    Suma reservada = 319 €.
-    El techo dinámico del Reloj 1 se reduce a 600 - 319 = 281 € (< 550 €)
-    para no dejar sin saldo a la combinación de 2 relojes futuros.
+    Scenario: Global budget = 600 €.
+    Active watch 1 has maximum M_1 = 550 €.
+    There are two cheap future watches with high slack:
+      - Watch 2: next minimum = 100 €, maximum = 250 € -> H_2 = 0.60 >= 0.15, C_hat_2 = 145 €
+      - Watch 3: next minimum = 120 €, maximum = 300 € -> H_3 = 0.60 >= 0.15, C_hat_3 = 174 €
+    Reserved sum = 319 €.
+    Watch 1's dynamic ceiling is reduced to 600 - 319 = 281 € (< 550 €)
+    to avoid starving the combination of 2 future watches.
     """
     ledger = BudgetLedger(global_budget_eur=600)
     optimizer = PortfolioOptimizer(alpha=0.30, min_slack_ratio=0.15)
@@ -81,9 +81,9 @@ def test_optimizer_reserves_budget_for_two_cheap_future_watches_with_high_slack(
 
 def test_optimizer_releases_full_ceiling_when_future_watches_lose_slack_or_get_pruned() -> None:
     """
-    Escenario: Cuando los relojes futuros suben de precio y su holgura H_j cae por debajo
-    de H_min (0.15) o superan su máximo, el optimizador libera la reserva y eleva el techo
-    dinámico del reloj activo hasta min(M_i, disponible).
+    Scenario: When future watches increase in price and their slack H_j drops below
+    H_min (0.15) or exceeds their maximum, the optimizer releases the reservation and raises
+    the active watch's dynamic ceiling up to min(M_i, available).
     """
     ledger = BudgetLedger(global_budget_eur=600)
     optimizer = PortfolioOptimizer(alpha=0.30, min_slack_ratio=0.15)
@@ -96,7 +96,7 @@ def test_optimizer_releases_full_ceiling_when_future_watches_lose_slack_or_get_p
         next_min_bid_eur=280,
         seconds_remaining=18,
     )
-    # Reloj futuro 2 sube hasta 235 € sobre 250 € (H_2 = 15/250 = 0.06 < 0.15)
+    # Future watch 2 rises to 235 € over 250 € (H_2 = 15/250 = 0.06 < 0.15)
     lot_future_1 = WatchLot(
         lot_id="lot-2",
         url="https://www.catawiki.com/es/l/3002-seiko",
@@ -105,7 +105,7 @@ def test_optimizer_releases_full_ceiling_when_future_watches_lose_slack_or_get_p
         next_min_bid_eur=235,
         seconds_remaining=600,
     )
-    # Reloj futuro 3 supera su máximo (320 > 300) -> podado automáticamente
+    # Future watch 3 exceeds its maximum (320 > 300) -> automatically pruned
     lot_future_2 = WatchLot(
         lot_id="lot-3",
         url="https://www.catawiki.com/es/l/3003-citizen",

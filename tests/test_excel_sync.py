@@ -1,4 +1,4 @@
-"""Tests asíncronos de ExcelSyncWorker con bloqueo de archivo simulado."""
+"""Asynchronous tests for ExcelSyncWorker with simulated file lock."""
 
 import asyncio
 from pathlib import Path
@@ -91,7 +91,7 @@ async def test_excel_sync_worker_tolerates_permission_error_and_recovers(tmp_pat
         my_last_bid_eur=400,
         current_bid_eur=400,
     )
-    # Primera actualización mientras el archivo está bloqueado
+    # First update while file is locked
     worker.enqueue_state(
         GlobalBudgetState(global_budget_eur=1000, spent_eur=0, committed_leader_eur=400),
         [lot],
@@ -102,7 +102,7 @@ async def test_excel_sync_worker_tolerates_permission_error_and_recovers(tmp_pat
     assert worker.lock_Encountered_count >= 1
     assert worker.successful_writes_count == 0
 
-    # Segunda actualización en pleno bloqueo (el usuario gana el reloj por 450 €)
+    # Second update during lock (user wins watch for 450 €)
     lot.status = AuctionStatus.WON
     lot.my_last_bid_eur = 450
     lot.current_bid_eur = 450
@@ -111,7 +111,7 @@ async def test_excel_sync_worker_tolerates_permission_error_and_recovers(tmp_pat
         [lot],
     )
 
-    # El usuario cierra el Excel -> se libera el bloqueo
+    # User closes Excel -> lock is released
     file_locked = False
     await asyncio.sleep(0.15)
     await worker.stop()
@@ -120,7 +120,7 @@ async def test_excel_sync_worker_tolerates_permission_error_and_recovers(tmp_pat
     assert worker.successful_writes_count >= 1
     assert worker.last_error is None
 
-    # Verificar que en disco quedó persistido el estado más reciente (GANADO por 450 €)
+    # Verify that the most recent state was persisted to disk (GANADO for 450 €)
     wb = load_workbook(excel_path, data_only=True)
     ws = wb.active
     assert ws is not None

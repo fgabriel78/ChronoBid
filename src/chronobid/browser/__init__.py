@@ -1,4 +1,4 @@
-"""Motor de navegador CDP e interacción con Catawiki."""
+"""CDP browser engine and Catawiki interaction."""
 
 from chronobid.browser.catawiki_page import (
     CatawikiLotPage,

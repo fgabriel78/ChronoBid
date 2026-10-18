@@ -1,4 +1,4 @@
-"""Worker asíncrono write-behind para sincronizar el estado hacia Excel sin bloquear pujas."""
+"""Asynchronous write-behind worker to synchronize state to Excel without blocking bids."""
 
 from __future__ import annotations
 
@@ -22,11 +22,11 @@ WriterFunc = Callable[[Path, GlobalBudgetState, list[WatchLot]], None]
 
 class ExcelSyncWorker:
     """
-    Gestiona la persistencia asíncrona en segundo plano (write-behind) hacia el fichero .xlsx.
+    Manages asynchronous background persistence (write-behind) to the .xlsx file.
 
-    Si el archivo está bloqueado por Microsoft Excel en Windows (PermissionError),
-    conserva el último estado en memoria sin bloquear el bucle de pujas y reintenta
-    automáticamente hasta que el archivo quede libre.
+    If the file is locked by Microsoft Excel on Windows (PermissionError),
+    it retains the latest in-memory state without blocking the bidding loop and
+    automatically retries until the file becomes free.
     """
 
     def __init__(
@@ -53,13 +53,13 @@ class ExcelSyncWorker:
 
     @property
     def is_dirty(self) -> bool:
-        """Indica si existen cambios en memoria pendientes de persistir en disco."""
+        """Indicates whether there are pending in-memory changes to persist to disk."""
         return self._version > self._flushed_version
 
     def enqueue_state(self, budget_state: GlobalBudgetState, lots: list[WatchLot]) -> None:
         """
-        Registra en memoria una nueva instantánea de presupuesto y lotes de forma inmediata
-        (no bloqueante) y despierta al worker de persistencia.
+        Immediately registers a new snapshot of budget and lots in memory
+        (non-blocking) and wakes up the persistence worker.
         """
         self._latest_budget = budget_state
         self._latest_lots = [copy.copy(lot) for lot in lots]
@@ -68,9 +68,9 @@ class ExcelSyncWorker:
 
     async def flush_once(self) -> bool:
         """
-        Intenta volcar a disco la última instantánea pendiente.
-        Devuelve True si el estado quedó sincronizado o no había cambios pendientes,
-        o False si el archivo estaba bloqueado (PermissionError).
+        Attempts to flush the latest pending snapshot to disk.
+        Returns True if state was synchronized or there were no pending changes,
+        or False if the file was locked (PermissionError).
         """
         if not self.is_dirty or self._latest_budget is None:
             return True
@@ -96,7 +96,7 @@ class ExcelSyncWorker:
             )
             return False
         except OSError as exc:
-            # En Windows algunos bloqueos exclusivos de compartición se reportan como OSError (winerror 32/33)
+            # On Windows some exclusive sharing locks are reported as OSError (winerror 32/33)
             if getattr(exc, "winerror", None) in {32, 33} or isinstance(exc, PermissionError):
                 self.lock_Encountered_count += 1
                 self.last_error = f"Archivo Excel bloqueado por Windows: {exc}"
@@ -113,14 +113,14 @@ class ExcelSyncWorker:
         return True
 
     async def start(self) -> None:
-        """Inicia la tarea de fondo que sincroniza los cambios encolados."""
+        """Starts the background task that synchronizes queued changes."""
         if self._running:
             return
         self._running = True
         self._task = asyncio.create_task(self._run_loop(), name="excel-sync-worker")
 
     async def stop(self, *, flush_remaining: bool = True, max_attempts: int = 3) -> None:
-        """Detiene el worker e intenta persistir los cambios finales si los hubiera."""
+        """Stops the worker and attempts to persist final changes if any."""
         self._running = False
         self._wake_event.set()
         if self._task is not None:
@@ -144,15 +144,15 @@ class ExcelSyncWorker:
             while self._running and self.is_dirty:
                 flushed = await self.flush_once()
                 if flushed:
-                    # Si mientras escribíamos llegó otra versión, el bucle volverá a iterar
+                    # If another version arrived while writing, the loop iterates again
                     continue
-                # Archivo bloqueado: esperar retry_interval_seconds antes de reintentar
+                # File locked: wait retry_interval_seconds before retrying
                 await asyncio.sleep(self.retry_interval_seconds)
 
     async def reload_inputs_if_available(self) -> WorkbookConfigSnapshot | None:
         """
-        Relee la configuración de entrada (B1 y A:B) desde el disco para detectar
-        ajustes en caliente del usuario, tolerando que el archivo esté abierto.
+        Rereads input configuration (B1 and A:B) from disk to detect
+        live adjustments made by the user, tolerating open file locks.
         """
         try:
             return await asyncio.to_thread(read_workbook_config, self.file_path)

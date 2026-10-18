@@ -1,13 +1,10 @@
 schema: spec-driven
 
-# Project context (optional)
-# Add only constraints that should guide OpenSpec artifacts and workflows.
-# Include constraints an agent cannot infer by reading the code.
-# Keep general project documentation and discoverable codebase facts out.
-# Example:
-#   context: |
-#     Designs and tasks must cover Windows, macOS, and Linux
-#     Write all artifacts in Spanish
+# Project context
+context: |
+  All specifications, proposals, designs, tasks, and OpenSpec artifacts MUST be written in English.
+  All source code comments, docstrings, and tests MUST be written in English.
+
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.

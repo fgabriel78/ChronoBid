@@ -1,4 +1,4 @@
-"""Estrategia de cartera, contabilidad atómica y tácticas de puja."""
+"""Portfolio strategy, atomic budget accounting, and bidding tactics."""
 
 from chronobid.strategy.ledger import BudgetLedger
 from chronobid.strategy.optimizer import PortfolioOptimizer

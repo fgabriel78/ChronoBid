@@ -1,4 +1,4 @@
-"""Tests para el generador, lector y escritor de Excel en workbook_io.py."""
+"""Tests for the Excel generator, reader, and writer in workbook_io.py."""
 
 from datetime import datetime
 from pathlib import Path
@@ -53,20 +53,20 @@ def test_read_workbook_detects_invalid_rows_and_continues(tmp_path: Path) -> Non
     wb = load_workbook(excel_path)
     ws = wb.active
     assert ws is not None
-    # Fila 7: válida
+    # Row 7: valid
     ws.cell(row=7, column=1, value="https://www.catawiki.com/es/l/200001-longines")
     ws.cell(row=7, column=2, value=400)
-    # Fila 8: sin URL
+    # Row 8: missing URL
     ws.cell(row=8, column=1, value="")
     ws.cell(row=8, column=2, value=250)
-    # Fila 9: puja máxima negativa
+    # Row 9: negative max bid
     ws.cell(row=9, column=1, value="https://www.catawiki.com/es/l/200003-tissot")
     ws.cell(row=9, column=2, value=-10)
-    # Fila 10: puja máxima no numérica
+    # Row 10: non-numeric max bid
     ws.cell(row=10, column=1, value="https://www.catawiki.com/es/l/200004-hamilton")
     ws.cell(row=10, column=2, value="abc")
-    # Fila 11: vacía (debe ignorarse)
-    # Fila 12: válida con símbolo de euro
+    # Row 11: empty (should be ignored)
+    # Row 12: valid with euro symbol
     ws.cell(row=12, column=1, value="https://www.catawiki.com/es/l/200005-certina")
     ws.cell(row=12, column=2, value="275 €")
     wb.save(excel_path)
@@ -114,7 +114,7 @@ def test_write_workbook_state_updates_outputs_and_preserves_user_inputs(tmp_path
     ]
     create_excel_template(excel_path, default_budget_eur=1000, sample_rows=sample_rows)
 
-    # Simulamos que el usuario edita manualmente B1 y B7 en el disco antes de que el agente escriba
+    # Simulate user manually editing B1 and B7 on disk before the agent writes
     wb = load_workbook(excel_path)
     ws = wb.active
     assert ws is not None
@@ -148,17 +148,17 @@ def test_write_workbook_state_updates_outputs_and_preserves_user_inputs(tmp_path
     wb_check = load_workbook(excel_path, data_only=True)
     ws_check = wb_check.active
     assert ws_check is not None
-    # Entradas de usuario preservadas intactas
+    # User inputs preserved intact
     assert ws_check["B1"].value == 1250
     assert ws_check["A7"].value == "https://www.catawiki.com/es/l/300001-omega"
     assert ws_check["B7"].value == 550
 
-    # Salidas de presupuesto actualizadas
+    # Budget outputs updated
     assert ws_check["B2"].value == 200
     assert ws_check["B3"].value == 320
     assert ws_check["B4"].value == 480
 
-    # Columnas C..J actualizadas
+    # Columns C..J updated
     assert ws_check["C7"].value == "Omega Geneve Automatic 1972"
     assert ws_check["D7"].value == "2026-10-17 21:15:00"
     assert ws_check["E7"].value == "LIDER"
@@ -178,7 +178,7 @@ def test_read_workbook_config_ignores_error_titles(tmp_path: Path) -> None:
         sample_rows=[("https://www.catawiki.com/es/l/107658893-seiko-presage", 400)],
     )
 
-    # Simular que la fila 7 tiene en la columna C el mensaje de error "We can't load this page right now"
+    # Simulate row 7 having the error message "We can't load this page right now" in column C
     wb = load_workbook(excel_path)
     ws = wb.active
     assert ws is not None
@@ -189,7 +189,7 @@ def test_read_workbook_config_ignores_error_titles(tmp_path: Path) -> None:
     config = read_workbook_config(excel_path)
     assert len(config.lots) == 1
     lot = config.lots[0]
-    assert lot.title == ""  # Debe haber ignorado el mensaje de error
+    assert lot.title == ""  # Should have ignored the error message
 
 
 def test_extract_input_signature_detects_changes(tmp_path: Path) -> None:
@@ -209,7 +209,7 @@ def test_extract_input_signature_detects_changes(tmp_path: Path) -> None:
     sig_mem = make_input_signature_from_memory(cfg.global_budget_eur, cfg.lots)
     assert sig_disk == sig_mem
 
-    # Modificar B1 en Excel -> cambia la firma
+    # Modify B1 in Excel -> changes signature
     wb = load_workbook(excel_path)
     ws = wb.active
     assert ws is not None
@@ -222,7 +222,7 @@ def test_extract_input_signature_detects_changes(tmp_path: Path) -> None:
     assert sig_new != sig_mem
     assert sig_new.global_budget_eur == 1500
 
-    # Añadir nueva fila -> cambia la firma
+    # Add new row -> changes signature
     wb = load_workbook(excel_path)
     ws = wb.active
     assert ws is not None
@@ -236,7 +236,7 @@ def test_extract_input_signature_detects_changes(tmp_path: Path) -> None:
     assert len(sig_added.lots_inputs) == 3
     assert sig_added != sig_new
 
-    # Archivo inexistente devuelve None
+    # Non-existent file returns None
     assert extract_input_signature(tmp_path / "non_existent.xlsx") is None
 
 

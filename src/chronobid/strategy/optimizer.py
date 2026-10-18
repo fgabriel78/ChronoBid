@@ -1,4 +1,4 @@
-"""Optimizador dinámico de cartera (PortfolioOptimizer) para maximizar el número de relojes."""
+"""Dynamic portfolio optimizer (PortfolioOptimizer) to maximize the number of watches."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from chronobid.strategy.ledger import BudgetLedger
 
 class PortfolioOptimizer:
     """
-    Calcula en tiempo real la poda de lotes fuera de precio y el Techo Dinámico (E_i)
-    de cada subasta activa para maximizar el número total de relojes adjudicados.
+    Computes real-time pruning of overpriced lots and Dynamic Ceiling (E_i)
+    for each active auction to maximize the total number of awarded watches.
     """
 
     def __init__(
@@ -29,9 +29,9 @@ class PortfolioOptimizer:
 
     def prune_lots(self, lots: Iterable[WatchLot]) -> list[WatchLot]:
         """
-        Descarta automáticamente (PERDIDO: Superó Máximo) todo lote activo donde el usuario
-        no sea líder y el siguiente escalón mínimo supere la puja máxima limpia del Excel.
-        Devuelve la lista de lotes que acaban de ser podados.
+        Automatically discards (PERDIDO: Superó Máximo) any active lot where the user
+        is not leader and the next minimum step exceeds the clean maximum bid from Excel.
+        Returns the list of lots that were just pruned.
         """
         pruned: list[WatchLot] = []
         for lot in lots:
@@ -49,8 +49,8 @@ class PortfolioOptimizer:
 
     def estimate_lot_cost(self, lot: WatchLot) -> int:
         """
-        Calcula el coste esperado conservador de un lote futuro viable:
-            C_hat_j = SiguienteMinimo_j + alpha * (M_j - SiguienteMinimo_j)
+        Computes conservative expected cost for a viable future lot:
+            C_hat_j = NextMinimum_j + alpha * (M_j - NextMinimum_j)
         """
         next_min = lot.next_min_bid_eur if lot.next_min_bid_eur > 0 else max(1, lot.current_bid_eur)
         if next_min > lot.max_bid_eur:
@@ -60,8 +60,8 @@ class PortfolioOptimizer:
 
     def compute_slack_ratio(self, lot: WatchLot) -> float:
         """
-        Calcula el índice de viabilidad (holgura H_j) de un lote:
-            H_j = (M_j - SiguienteMinimo_j) / M_j
+        Computes the viability index (slack ratio H_j) of a lot:
+            H_j = (M_j - NextMinimum_j) / M_j
         """
         if lot.max_bid_eur <= 0:
             return 0.0
@@ -77,9 +77,9 @@ class PortfolioOptimizer:
         purchasing_power_eur: int,
     ) -> int:
         """
-        Calcula el capital a reservar (ReservaCartera_i) cuando existe una combinación
-        de 2 o más relojes futuros con alta holgura (H_j >= H_min) cuyo coste estimado
-        combinado cabe dentro del poder de compra disponible.
+        Computes capital to reserve (PortfolioReserve_i) when there is a combination
+        of 2 or more future watches with high slack (H_j >= H_min) whose combined
+        estimated cost fits within available purchasing power.
         """
         if purchasing_power_eur <= 0:
             return 0
@@ -90,7 +90,7 @@ class PortfolioOptimizer:
                 continue
             if not lot.is_viable:
                 continue
-            # Los lotes donde ya somos líderes ya tienen su saldo descontado en BudgetLedger
+            # Lots where we are already leaders already have their balance deducted in BudgetLedger
             if lot.is_leader:
                 continue
 
@@ -105,7 +105,7 @@ class PortfolioOptimizer:
 
         candidate_costs.sort()
 
-        # Encontrar la mayor combinación de m >= 2 relojes futuros que cabe en purchasing_power_eur
+        # Find the largest combination of m >= 2 future watches that fits in purchasing_power_eur
         accumulated = 0
         count = 0
         for cost in candidate_costs:
@@ -127,8 +127,8 @@ class PortfolioOptimizer:
         ledger: BudgetLedger,
     ) -> int:
         """
-        Calcula y actualiza el Techo Dinámico Efectivo E_i del lote `target_lot`:
-            E_i = min(M_i, MiPujaActual_i + B_disp - ReservaCartera_i)
+        Computes and updates the Effective Dynamic Ceiling E_i of lot `target_lot`:
+            E_i = min(M_i, MyCurrentBid_i + B_avail - PortfolioReserve_i)
         """
         all_lots_list = list(all_lots)
         self.prune_lots(all_lots_list)
@@ -153,10 +153,11 @@ class PortfolioOptimizer:
         all_lots: Iterable[WatchLot],
         ledger: BudgetLedger,
     ) -> dict[str, int]:
-        """Recalcula la poda y los techos dinámicos de todos los lotes de la cartera."""
+        """Recalculates pruning and dynamic ceilings for all lots in the portfolio."""
         lots_list = list(all_lots)
         self.prune_lots(lots_list)
         result: dict[str, int] = {}
         for lot in lots_list:
             result[lot.lot_id] = self.compute_dynamic_ceiling(lot, lots_list, ledger)
         return result
+

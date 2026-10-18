@@ -1,4 +1,4 @@
-"""Extractor de estado de lote y ejecutor de pujas en Catawiki (DOM + red JSON)."""
+"""Lot status extractor and bid executor on Catawiki (DOM + JSON network)."""
 
 from __future__ import annotations
 
@@ -12,14 +12,14 @@ from chronobid.models.auction import ReserveStatus
 
 
 class CatawikiPageLoadError(Exception):
-    """Excepción lanzada cuando una página de Catawiki devuelve un error transitorio o no es un lote válido."""
+    """Exception raised when a Catawiki page returns a transient error or is not a valid lot."""
 
     pass
 
 
 @dataclass(frozen=True)
 class CatawikiSelectors:
-    """Selectores DOM y patrones de texto bilingües (ES/EN) configurables para Catawiki."""
+    """Configurable bilingual (ES/EN) DOM selectors and text patterns for Catawiki."""
 
     title_selectors: tuple[str, ...] = (
         '[data-testid="lot-title"]',
@@ -135,7 +135,7 @@ class CatawikiSelectors:
 
 @dataclass
 class LotPageSnapshot:
-    """Instantánea estructurada del estado en vivo de una página de lote de Catawiki."""
+    """Structured snapshot of live state for a Catawiki lot page."""
 
     title: str = ""
     current_bid_eur: int = 0
@@ -151,8 +151,8 @@ class LotPageSnapshot:
 
 def compute_catawiki_next_min_bid(current_bid_eur: int) -> int:
     """
-    Calcula el siguiente escalón mínimo estándar de Catawiki en euros
-    conforme a la tabla oficial de tramos de incremento de la plataforma.
+    Computes standard Catawiki next minimum bid step in euros
+    according to the platform's official increment tier table.
     """
     if current_bid_eur <= 0:
         return 1
@@ -180,7 +180,7 @@ def compute_catawiki_next_min_bid(current_bid_eur: int) -> int:
 
 
 def parse_euro_amount(text: str | int | float | None) -> int | None:
-    """Extrae un importe entero en euros desde textos como '€ 320', '320 €', '1.250 €' o '1,250 EUR'."""
+    """Extracts an integer euro amount from text such as '€ 320', '320 €', '1.250 €', or '1,250 EUR'."""
     if text is None:
         return None
     if isinstance(text, int):
@@ -192,7 +192,7 @@ def parse_euro_amount(text: str | int | float | None) -> int | None:
     if not raw:
         return None
 
-    # Buscar secuencias numéricas con posibles separadores de miles (. o ,)
+    # Search for numeric sequences with possible thousand separators (. or ,)
     match = re.search(r"(\d{1,3}(?:[.,]\d{3})+|\d+)", raw)
     if not match:
         return None
@@ -205,10 +205,10 @@ def parse_euro_amount(text: str | int | float | None) -> int | None:
 
 def parse_countdown_seconds(text: str | int | float | None) -> float | None:
     """
-    Convierte un contador de tiempo en segundos restantes.
-    Soporta:
-      - Segundos directos: '18s', '85', 42.5
-      - Formato reloj: '01:29', '00:04:15', '1d 02:10:00', '2h 15m 10s', '04m 12s'
+    Converts a countdown timer into remaining seconds.
+    Supports:
+      - Direct seconds: '18s', '85', 42.5
+      - Clock format: '01:29', '00:04:15', '1d 02:10:00', '2h 15m 10s', '04m 12s'
     """
     if text is None:
         return None
@@ -219,11 +219,11 @@ def parse_countdown_seconds(text: str | int | float | None) -> float | None:
     if not raw:
         return None
 
-    # Número puro o acabado en 's'
+    # Pure number or ending in 's'
     if re.fullmatch(r"\d+(?:\.\d+)?s?", raw):
         return max(0.0, float(raw.rstrip("s")))
 
-    # Formato HH:MM:SS o MM:SS
+    # HH:MM:SS or MM:SS format
     colon_match = re.search(r"(?:(\d+):)?(\d{1,2}):(\d{2})", raw)
     if colon_match:
         hours = int(colon_match.group(1) or 0)
@@ -233,7 +233,7 @@ def parse_countdown_seconds(text: str | int | float | None) -> float | None:
         days = int(days_match.group(1)) if days_match else 0
         return float(days * 86400 + hours * 3600 + minutes * 60 + seconds)
 
-    # Formato con unidades explícitas: Xd Xh Xm Xs
+    # Format with explicit units: Xd Xh Xm Xs
     total = 0.0
     found = False
     for pattern, factor in (
@@ -252,8 +252,8 @@ def parse_countdown_seconds(text: str | int | float | None) -> float | None:
 
 def parse_network_bidding_payload(payload: dict[str, Any]) -> LotPageSnapshot | None:
     """
-    Extrae un LotPageSnapshot desde un payload JSON de red de Catawiki
-    (o anidado bajo 'biddingBlockResponse' / 'bidding_block' / 'lot' / 'data').
+    Extracts a LotPageSnapshot from a Catawiki network JSON payload
+    (or nested under 'biddingBlockResponse' / 'bidding_block' / 'lot' / 'data').
     """
     if not isinstance(payload, dict):
         return None
@@ -313,7 +313,7 @@ def parse_network_bidding_payload(payload: dict[str, Any]) -> LotPageSnapshot | 
     if cur_bid is None and next_min is None and seconds_rem is None:
         return None
 
-    # Detección de lotes en apertura inicial (sin pujas registradas aún)
+    # Detection of opening lots (no bids registered yet)
     has_bids = True
     bids_list = (
         root.get("biddingHistory", {}).get("bids")
@@ -395,9 +395,9 @@ def parse_network_bidding_payload(payload: dict[str, Any]) -> LotPageSnapshot | 
 
 class CatawikiLotPage:
     """
-    Controlador de una pestaña de lote en Catawiki.
-    Combina intercepción de respuestas JSON de red y lectura del DOM con selectores
-    bilingües (ES/EN), y ejecuta el envío de pujas por incremento mínimo.
+    Controller for a Catawiki lot tab.
+    Combines network JSON response interception and DOM reading with bilingual
+    selectors (ES/EN), and executes minimum increment bid submission.
     """
 
     def __init__(
@@ -418,7 +418,7 @@ class CatawikiLotPage:
         self._listener_attached = False
 
     def attach_network_listener(self) -> None:
-        """Suscribe un listener a respuestas JSON de la página para capturar actualizaciones de puja."""
+        """Subscribes a listener to page JSON responses to capture bid updates."""
         if self._listener_attached or not hasattr(self.page, "on"):
             return
         self.page.on("response", self._on_network_response)
@@ -438,7 +438,7 @@ class CatawikiLotPage:
             return
 
     async def navigate(self, url: str, *, timeout_ms: int = 20000) -> None:
-        """Navega a la URL del lote y engancha el interceptor de red."""
+        """Navigates to the lot URL and attaches the network interceptor."""
         self.attach_network_listener()
         await self.page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
 
@@ -483,7 +483,7 @@ class CatawikiLotPage:
         return None
 
     async def _extract_next_data_snapshot(self) -> LotPageSnapshot | None:
-        """Extrae el snapshot tipado a partir del tag <script id="__NEXT_DATA__"> de Next.js."""
+        """Extracts typed snapshot from Next.js <script id="__NEXT_DATA__"> tag."""
         try:
             if not hasattr(self.page, "evaluate"):
                 return None
@@ -507,8 +507,8 @@ class CatawikiLotPage:
         return None
 
     async def extract_snapshot(self) -> LotPageSnapshot:
-        """Extrae el estado actual del lote combinando lectura de Next.js SSR, DOM y red JSON."""
-        # 1. Texto completo visible de la página (o contenedor principal) para detectar errores y avisos ES/EN
+        """Extracts current lot state combining Next.js SSR, DOM, and JSON network reading."""
+        # 1. Full visible page text (or main container) to detect ES/EN errors and notices
         body_text = ""
         try:
             body_loc = self.page.locator("body")
@@ -517,15 +517,15 @@ class CatawikiLotPage:
         except Exception:
             body_text = ""
 
-        # Detección temprana de páginas de error de Catawiki
+        # Early detection of Catawiki error pages
         for phrase in self.selectors.error_phrases:
             if phrase in body_text:
                 raise CatawikiPageLoadError(f"Página de error detectada en Catawiki: '{phrase}'")
 
-        # 2. Intentar extracción directa desde Next.js __NEXT_DATA__ (estado inicial / hidratado)
+        # 2. Attempt direct extraction from Next.js __NEXT_DATA__ (initial / hydrated state)
         ssr_snap = await self._extract_next_data_snapshot()
 
-        # 3. Lectura directa de elementos DOM
+        # 3. Direct reading of DOM elements
         title = (await self._first_text(self.selectors.title_selectors)) or ""
 
         raw_current_bid = await self._first_attr_or_value(
@@ -546,7 +546,7 @@ class CatawikiLotPage:
         )
         seconds_rem = parse_countdown_seconds(raw_countdown)
 
-        # Respaldo con el último snapshot de red si está disponible
+        # Fallback to last network snapshot if available
         net = self._last_network_snapshot
 
         is_closed = any(phrase in body_text for phrase in self.selectors.closed_phrases)
@@ -569,14 +569,14 @@ class CatawikiLotPage:
             )
         )
 
-        # Detección de lotes en apertura inicial sin pujas
+        # Detection of opening lots without bids
         is_opening_lot = not dom_shows_active_bids and (
             dom_has_no_bids
             or (ssr_snap is not None and ssr_snap.extra.get("has_no_bids", False))
             or (net is not None and net.extra.get("has_no_bids", False))
         )
 
-        # Validación de que la página contiene datos genuinos de subasta
+        # Validation that the page contains genuine auction data
         has_auction_data = (
             ssr_snap is not None
             or net is not None
@@ -616,9 +616,9 @@ class CatawikiLotPage:
             title = net.title
 
         if is_opening_lot:
-            # En lotes sin pujas previas, si el DOM o SSR muestran la puja de salida (ej. 1 €),
-            # la puja actual real de mercado es 0 € y la puja inicial requerida es la de salida
-            # (1 € o el primer botón rápido de puja).
+            # For lots without prior bids, if DOM or SSR display the starting bid (e.g., 1 €),
+            # the real current market bid is 0 € and required opening bid is the starting bid
+            # (1 € or the first quick-bid button).
             if current_bid is not None and (current_bid <= 1 or (ssr_snap and ssr_snap.current_bid_eur == 0)):
                 current_bid = 0
             if next_min is None or next_min <= 0:
@@ -682,14 +682,14 @@ class CatawikiLotPage:
 
     async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
         """
-        Ejecuta una puja por el importe exacto `bid_amount_eur` en la interfaz de Catawiki,
-        espera activamente la aparición del diálogo modal de confirmación (`LotBidConfirmation`),
-        pulsa el botón principal de confirmar y devuelve la nueva instantánea tras la actualización.
+        Executes a bid for the exact amount `bid_amount_eur` in Catawiki interface,
+        actively waits for confirmation modal dialog (`LotBidConfirmation`) to mount,
+        clicks primary confirm button, and returns new snapshot after update.
         """
         if bid_amount_eur <= 0:
             raise ValueError("El importe de puja debe ser mayor que 0 EUR.")
 
-        # 0. Si existiera un diálogo modal de confirmación previo colgado, cerrarlo antes de iniciar
+        # 0. If a previous hanging confirmation modal exists, close it before starting
         for cancel_sel in self.selectors.bid_cancel_selectors:
             try:
                 cancel_loc = self.page.locator(cancel_sel)
@@ -699,7 +699,7 @@ class CatawikiLotPage:
             except Exception:
                 continue
 
-        # 1. Intentar botón de puja rápida si coincide exactamente con bid_amount_eur
+        # 1. Attempt quick-bid button if it matches bid_amount_eur exactly
         quick_clicked = False
         try:
             for quick_sel in ('[data-testid="quick-bid-buttons"] button', '[data-testid="quick-bid-button"]'):
@@ -718,7 +718,7 @@ class CatawikiLotPage:
         except Exception:
             quick_clicked = False
 
-        # 2. Si no hubo botón rápido exacto, rellenar campo de puja y pulsar enviar (puja directa)
+        # 2. If no exact quick button, fill bid input and click submit (direct bid)
         if not quick_clicked:
             filled = False
             for input_sel in self.selectors.bid_input_selectors:
@@ -742,7 +742,7 @@ class CatawikiLotPage:
             if not submitted:
                 raise RuntimeError("No se encontró el botón de envío de puja en la página de Catawiki.")
 
-        # 3. Esperar activamente a que aparezca el diálogo modal de confirmación y pulsar aceptar
+        # 3. Actively wait for confirmation modal dialog to appear and click confirm
         confirmed = False
         elapsed = 0.0
         timeout = max(0.0, self.confirm_appear_timeout_seconds)

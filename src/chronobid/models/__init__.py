@@ -1,4 +1,4 @@
-"""Modelos de dominio de subastas, lotes y presupuesto."""
+"""Domain models for auctions, lots, and budget."""
 
 from chronobid.models.auction import (
     AuctionStatus,

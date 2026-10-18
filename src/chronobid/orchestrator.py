@@ -1,4 +1,4 @@
-"""Orquestador principal (Modo Patrulla y Modo Asalto concurrente) para ChronoBid."""
+"""Main orchestrator (Patrol Mode and concurrent Assault Mode) for ChronoBid."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class LotPageControllerProtocol(Protocol):
-    """Protocolo para el controlador de una pestaña de lote (real vía CDP o simulada)."""
+    """Protocol for a lot tab controller (real via CDP or simulated)."""
 
     async def extract_snapshot(self) -> LotPageSnapshot: ...
 
@@ -41,7 +41,7 @@ class LotPageControllerProtocol(Protocol):
 
 
 class PlaywrightLotController:
-    """Adaptador que envuelve una pestaña Playwright real y su CatawikiLotPage."""
+    """Adapter wrapping a real Playwright tab and its CatawikiLotPage."""
 
     def __init__(self, catawiki_page: CatawikiLotPage) -> None:
         self._cw_page = catawiki_page
@@ -64,11 +64,11 @@ ControllerFactory = Callable[[WatchLot], Awaitable[LotPageControllerProtocol]]
 
 class AuctionOrchestrator:
     """
-    Coordina el ciclo completo de vigilancia y pujas sobre múltiples lotes de Catawiki:
-      - Modo Patrulla (> 5 min): lectura periódica secuencial y poda temprana.
-      - Modo Asalto (<= 5 min y prórrogas +90s): tarea concurrente con pestaña dedicada
-        por lote, contabilidad atómica (BudgetLedger), techo dinámico (PortfolioOptimizer),
-        escalera de reserva y persistencia write-behind en Excel (ExcelSyncWorker).
+    Coordinates full monitoring and bidding lifecycle across multiple Catawiki lots:
+      - Patrol Mode (> 5 min): sequential periodic reads and early pruning.
+      - Assault Mode (<= 5 min and +90s extensions): concurrent task with dedicated tab
+        per lot, atomic accounting (BudgetLedger), dynamic ceiling (PortfolioOptimizer),
+        reserve ladder, and write-behind persistence to Excel (ExcelSyncWorker).
     """
 
     def __init__(
@@ -129,11 +129,11 @@ class AuctionOrchestrator:
 
     def get_patrol_interval_for_lot(self, lot: WatchLot) -> float:
         """
-        Determina el intervalo de consulta escalonado para un lote según su tiempo restante:
-          - > 3600s (> 1 hora): 300s (5 min).
-          - 900s - 3600s (15 a 60 min): 120s (2 min).
-          - 300s - 900s (5 a 15 min): 60s (1 min).
-          - <= 300s o sin tiempo restante conocido (PENDING): 0.0s (consulta inmediata / asalto).
+        Determines the tiered query interval for a lot based on its remaining time:
+          - > 3600s (> 1 hour): 300s (5 min).
+          - 900s - 3600s (15 to 60 min): 120s (2 min).
+          - 300s - 900s (5 to 15 min): 60s (1 min).
+          - <= 300s or unknown remaining time (PENDING): 0.0s (immediate query / assault).
         """
         if lot.seconds_remaining is None:
             return 0.0
@@ -146,7 +146,7 @@ class AuctionOrchestrator:
         return 0.0
 
     def _get_excel_mtime(self) -> float:
-        """Obtiene la fecha de última modificación (mtime) del fichero Excel en disco."""
+        """Gets last modification time (mtime) of the Excel file on disk."""
         try:
             return self.excel_path.stat().st_mtime
         except (OSError, FileNotFoundError):
@@ -154,28 +154,28 @@ class AuctionOrchestrator:
 
     async def _check_and_reload_excel(self) -> bool:
         """
-        Comprueba si el fichero Excel ha sido modificado en disco.
-        Si la firma de entradas del usuario ha cambiado respecto a la activa en memoria,
-        dispara la reconciliación del estado.
-        Retorna True si hubo cambios reconciliados, False en caso contrario.
+        Checks whether the Excel file was modified on disk.
+        If user input signature changed compared to active in-memory signature,
+        triggers state reconciliation.
+        Returns True if changes were reconciled, False otherwise.
         """
         current_mtime = self._get_excel_mtime()
         if current_mtime == 0.0 or current_mtime <= self._last_excel_mtime:
             return False
 
-        # El mtime cambió. Extraemos la firma de inputs (B1 y columnas A:B) para discriminar
-        # entre una edición manual del usuario y un flush interno de ExcelSyncWorker.
+        # mtime changed. Extract input signature (B1 and columns A:B) to discriminate
+        # between manual user editing and internal flush from ExcelSyncWorker.
         new_sig = extract_input_signature(self.excel_path)
         if new_sig is None:
-            # Archivo temporalmente bloqueado o ilegible; no actualizar mtime para reintentar
+            # File temporarily locked or unreadable; do not update mtime so we retry
             return False
 
         if new_sig == self._last_input_signature:
-            # Fue una escritura interna de ChronoBid (o sin cambios de input)
+            # Was an internal ChronoBid write (or no input changes)
             self._last_excel_mtime = current_mtime
             return False
 
-        # Hay cambios de usuario en las entradas. Leemos la configuración completa.
+        # User changed inputs. Read full configuration.
         try:
             new_config = read_workbook_config(self.excel_path)
         except (PermissionError, OSError) as err:
@@ -191,17 +191,17 @@ class AuctionOrchestrator:
 
     async def reconcile_with_excel(self, new_config: WorkbookConfigSnapshot) -> bool:
         """
-        Reconcilia en caliente el estado en memoria con la nueva configuración de Excel:
-          - Sincroniza el presupuesto global en el ledger.
-          - Actualiza topes de puja y filas de lotes existentes.
-          - Reactiva lotes descartados por exceso de tope si el nuevo tope los hace viables.
-          - Da de alta nuevos lotes en estado PENDING y despierta la patrulla.
-          - Da de baja lotes eliminados del Excel (cancela tareas de asalto y libera reservas).
-        Retorna True si hubo cambios aplicados.
+        Reconciles in-memory state live with new Excel configuration:
+          - Synchronizes global budget in ledger.
+          - Updates bid ceilings and rows for existing lots.
+          - Reactivates lots discarded for exceeding ceiling if new ceiling makes them viable.
+          - Adds new lots in PENDING state and wakes up patrol.
+          - Removes lots deleted from Excel (cancels assault tasks and releases reservations).
+        Returns True if changes were applied.
         """
         changed = False
 
-        # 1. Presupuesto global (B1)
+        # 1. Global budget (B1)
         if new_config.global_budget_eur != self.ledger.global_budget_eur:
             try:
                 await self.ledger.update_global_budget(new_config.global_budget_eur)
@@ -218,11 +218,11 @@ class AuctionOrchestrator:
                     exc,
                 )
 
-        # Mapeo de lotes por URL
+        # Lot mapping by URL
         existing_by_url = {lot.url: lot for lot in self.lots}
         new_by_url = {lot.url: lot for lot in new_config.lots}
 
-        # 2. Bajas: lotes existentes cuya URL ya no está en new_config
+        # 2. Removals: existing lots whose URL is no longer in new_config
         lots_to_remove = [lot for url, lot in existing_by_url.items() if url not in new_by_url]
         for lot in lots_to_remove:
             if lot.lot_id in self._assault_tasks:
@@ -237,7 +237,7 @@ class AuctionOrchestrator:
 
         remaining_lots = [lot for lot in self.lots if lot.url in new_by_url]
 
-        # 3. Modificaciones de lotes existentes
+        # 3. Modifications of existing lots
         for lot in remaining_lots:
             cfg = new_by_url[lot.url]
             if lot.row_index != cfg.row_index:
@@ -298,7 +298,7 @@ class AuctionOrchestrator:
                         lot.lot_id,
                     )
 
-        # 4. Altas: lotes en new_config cuya URL no estaba en existing_by_url
+        # 4. Additions: lots in new_config whose URL was not in existing_by_url
         new_lots = [lot for url, lot in new_by_url.items() if url not in existing_by_url]
         if new_lots:
             remaining_lots.extend(new_lots)
@@ -333,18 +333,18 @@ class AuctionOrchestrator:
         return PlaywrightLotController(cw_page)
 
     def _emit_and_enqueue(self) -> None:
-        """Recalcula techos dinámicos, notifica al callback de UI y encola persistencia Excel."""
+        """Recalculates dynamic ceilings, notifies UI callback, and enqueues Excel persistence."""
         self.optimizer.refresh_all_ceilings(self.lots, self.ledger)
         self.sync_worker.enqueue_state(self.ledger.snapshot(), self.lots)
         if self.on_state_change is not None:
             self.on_state_change(self.lots, self.ledger)
 
     def has_active_lots(self) -> bool:
-        """Devuelve True mientras quede al menos un lote no terminal."""
+        """Returns True while at least one non-terminal lot remains."""
         return any(lot.status.is_active and not lot.is_closed for lot in self.lots)
 
     def _get_pending_patrol_lots(self) -> list[WatchLot]:
-        """Devuelve los lotes activos que aún requieren monitorización en Modo Patrulla."""
+        """Returns active lots that still require Patrol Mode monitoring."""
         return [
             lot
             for lot in self.lots
@@ -355,11 +355,11 @@ class AuctionOrchestrator:
 
     def _calculate_patrol_wait_seconds(self, pending_lots: list[WatchLot] | None = None) -> float:
         """
-        Calcula el tiempo de espera hasta la siguiente ronda de patrulla o transición de asalto.
-        Para cada lote activo:
-          - Evalúa su intervalo escalonado según el tiempo restante.
-          - Sincroniza con precisión el salto a Modo Asalto si está a punto de entrar (< assault_threshold_seconds).
-          - Retorna el menor tiempo de espera necesario entre todos los lotes pendientes.
+        Calculates wait time until next patrol round or assault transition.
+        For each active lot:
+          - Evaluates tiered interval according to remaining time.
+          - Accurately synchronizes transition to Assault Mode if near entry (< assault_threshold_seconds).
+          - Returns minimum required wait time among all pending lots.
         """
         lots_to_check = pending_lots if pending_lots is not None else self._get_pending_patrol_lots()
         if not lots_to_check:
@@ -381,7 +381,7 @@ class AuctionOrchestrator:
                 elapsed = now - last_polled
                 time_to_poll = max(0.5, interval - elapsed)
 
-            # Anticipación adaptativa a Modo Asalto (300s)
+            # Adaptive anticipation of Assault Mode (300s)
             if (
                 lot.is_viable
                 and lot.seconds_remaining is not None
@@ -397,10 +397,10 @@ class AuctionOrchestrator:
 
     async def run_patrol_step(self, *, force: bool = False) -> None:
         """
-        Ejecuta una pasada de Modo Patrulla sobre los lotes activos que aún no están
-        en Modo Asalto dedicado, y lanza tareas de Asalto para los que entren en <= 5 min.
-        Filtra y consulta únicamente los lotes cuyo intervalo asignado haya vencido o
-        que no tengan consulta previa registrada (salvo si force=True).
+        Executes a Patrol Mode pass over active lots not yet in dedicated
+        Assault Mode, and launches Assault tasks for lots entering <= 5 min.
+        Filters and queries only lots whose assigned interval has elapsed or
+        that have no registered prior query (unless force=True).
         """
         now = time.monotonic()
         for lot in self.lots:
@@ -451,7 +451,7 @@ class AuctionOrchestrator:
                 self._last_patrolled_at[lot.lot_id] = time.monotonic()
                 await controller.close()
 
-            # Reconciliar estado del lote (cierre, liderazgo o superación) en BudgetLedger
+            # Reconcile lot state (closing, leadership, or outbid) in BudgetLedger
             await self.tactics.reconcile_lot_with_ledger(lot, self.ledger)
 
             if lot.is_closed or lot.status.is_terminal:
@@ -460,7 +460,7 @@ class AuctionOrchestrator:
 
             self._emit_and_enqueue()
 
-            # Conmutar a Modo Asalto si entra en los últimos 5 minutos
+            # Switch to Assault Mode if entering last 5 minutes
             if (
                 lot.is_viable
                 and lot.seconds_remaining is not None
@@ -480,8 +480,8 @@ class AuctionOrchestrator:
 
     async def _run_assault_for_lot(self, lot: WatchLot) -> None:
         """
-        Mantiene una pestaña dedicada en Modo Asalto (< 5 min y prórrogas de +90s)
-        hasta que el lote finalice o quede descartado.
+        Maintains a dedicated tab in Assault Mode (< 5 min and +90s extensions)
+        until the lot finishes or is discarded.
         """
         controller = await self._controller_factory(lot)
         try:
@@ -544,7 +544,7 @@ class AuctionOrchestrator:
                             await self.ledger.release(lot.lot_id)
                             lot.notes = f"Puja de {bid_amt} € no confirmada en Catawiki"
                         elif not lot.is_leader:
-                            # Si tras pujar otro postor nos superó en el mismo milisegundo, liberar reserva
+                            # If outbid by another bidder in the same millisecond after bidding, release reservation
                             await self.ledger.release(lot.lot_id)
                     except Exception as exc:
                         logger.error("Error al enviar puja en %s: %s", lot.lot_id, exc)
@@ -558,7 +558,7 @@ class AuctionOrchestrator:
 
                 await asyncio.sleep(self.assault_tick_seconds)
 
-            # Consolidación final al salir del bucle de asalto
+            # Final consolidation upon exiting assault loop
             await self.tactics.process_tick_and_decide(
                 lot, self.lots, self.ledger, self.optimizer
             )
@@ -568,9 +568,10 @@ class AuctionOrchestrator:
 
     async def _wait_interval_with_reload_check(self, total_wait_seconds: float) -> None:
         """
-        Espera hasta `total_wait_seconds` en tramos de `excel_poll_interval_seconds`.
-        En cada tramo verifica si el Excel cambió. Si se detecta un nuevo lote o reactivación
-        (_reload_event.is_set()), o se solicita parada (_stop_event.is_set()), despierta de inmediato.
+        Waits up to `total_wait_seconds` in chunks of `excel_poll_interval_seconds`.
+        In each chunk verifies whether Excel changed. If a new lot or reactivation
+        is detected (_reload_event.is_set()), or stop is requested (_stop_event.is_set()),
+        wakes up immediately.
         """
         elapsed = 0.0
         while elapsed < total_wait_seconds and not self._stop_event.is_set():
@@ -593,8 +594,8 @@ class AuctionOrchestrator:
 
     async def run_until_complete(self) -> None:
         """
-        Ejecuta el orquestador completo (ExcelSyncWorker + bucle Patrulla/Asalto)
-        hasta que todas las subastas hayan finalizado o se solicite parada.
+        Runs the full orchestrator (ExcelSyncWorker + Patrol/Assault loop)
+        until all auctions have finished or stop is requested.
         """
         if self.cdp_client is not None:
             if not self.cdp_client.is_connected:
@@ -621,12 +622,12 @@ class AuctionOrchestrator:
                 pending_after_patrol = self._get_pending_patrol_lots()
 
                 if pending_after_patrol:
-                    # Quedan lotes en patrulla: esperar el intervalo de patrulla (con anticipación si procede)
+                    # Patrol lots remain: wait patrol interval (with anticipation if applicable)
                     wait_time = self._calculate_patrol_wait_seconds(pending_after_patrol)
                     await self._wait_interval_with_reload_check(wait_time)
                 elif active_assault_tasks:
-                    # Todos los lotes activos están en tareas de asalto: esperar pasivamente a que alguna termine
-                    # o que venza un intervalo breve, comprobando recargas en caliente
+                    # All active lots are in assault tasks: passively wait for one to complete
+                    # or brief interval to expire, checking live reloads
                     try:
                         await asyncio.wait(
                             active_assault_tasks,
@@ -648,5 +649,5 @@ class AuctionOrchestrator:
             await self.sync_worker.stop(flush_remaining=True)
 
     def request_stop(self) -> None:
-        """Solicita la parada ordenada del orquestador."""
+        """Requests orderly stop of the orchestrator."""
         self._stop_event.set()

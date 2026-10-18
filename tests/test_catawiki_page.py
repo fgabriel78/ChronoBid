@@ -1,4 +1,4 @@
-"""Tests para CatawikiLotPage: parseo DOM/JSON bilingüe y envío de puja mínima sobre páginas simuladas."""
+"""Tests for CatawikiLotPage: bilingual DOM/JSON parsing and minimum bid submission on simulated pages."""
 
 from typing import Any
 
@@ -60,7 +60,7 @@ class SimulatedLocator:
 
 
 class SimulatedCatawikiDOMPage:
-    """Fixture de página simulada de lote en Catawiki que actualiza su DOM al recibir una puja."""
+    """Simulated Catawiki lot page fixture that updates its DOM upon receiving a bid."""
 
     def __init__(
         self,
@@ -220,7 +220,7 @@ async def test_catawiki_lot_page_extract_and_submit_bid_with_reserve_ladder() ->
 
     lot_page = CatawikiLotPage(sim_page, confirmation_wait_seconds=0.0)
 
-    # 1. Lectura inicial: no somos líderes, reserva no alcanzada, faltan 19s
+    # 1. Initial read: not leader, reserve not met, 19s remaining
     snap0 = await lot_page.extract_snapshot()
     assert snap0.title == "Omega Speedmaster Reduced Automatic"
     assert snap0.current_bid_eur == 240
@@ -229,7 +229,7 @@ async def test_catawiki_lot_page_extract_and_submit_bid_with_reserve_ladder() ->
     assert snap0.is_leader is False
     assert snap0.reserve_status == ReserveStatus.NOT_MET
 
-    # 2. Enviamos primera puja mínima (260 €) -> pasamos a líder pero reserva sigue en 280 €
+    # 2. Submit first minimum bid (260 €) -> become leader but reserve remains at 280 €
     snap1 = await lot_page.submit_minimum_bid(260)
     assert sim_page.submitted_bids == [260]
     assert sim_page.confirm_clicks == 1
@@ -238,7 +238,7 @@ async def test_catawiki_lot_page_extract_and_submit_bid_with_reserve_ladder() ->
     assert snap1.next_min_bid_eur == 280
     assert snap1.reserve_status == ReserveStatus.NOT_MET
 
-    # 3. Escalera de reserva: subimos un escalón más (280 €) -> se desbloquea la reserva
+    # 3. Reserve ladder: raise one more step (280 €) -> reserve is unlocked
     snap2 = await lot_page.submit_minimum_bid(280)
     assert sim_page.submitted_bids == [260, 280]
     assert snap2.is_leader is True
@@ -311,7 +311,7 @@ def test_parse_network_bidding_payload_native_catawiki() -> None:
 
 
 class SimulatedNextDataAndDOMPage:
-    """Página simulada con soporte de evaluate para __NEXT_DATA__ y selectores DOM reales."""
+    """Simulated page with evaluate support for __NEXT_DATA__ and real DOM selectors."""
 
     def __init__(
         self,
@@ -385,7 +385,7 @@ async def test_catawiki_hybrid_extraction_and_quick_bid() -> None:
     assert snap.reserve_status == ReserveStatus.NOT_MET
     assert snap.is_closed is False
 
-    # Envío de puja mínima usando botón rápido dentro de [data-testid="quick-bid-buttons"] button
+    # Submit minimum bid using quick bid button inside [data-testid="quick-bid-buttons"] button
     await lot_page.submit_minimum_bid(280)
     assert sim.clicked_quick_buttons == ["280"]
 
@@ -422,7 +422,7 @@ def test_compute_catawiki_next_min_bid(current_bid: int, expected_next: int) -> 
 
 
 def test_reserve_status_detection() -> None:
-    # 1. Sin reserva explícito en título
+    # 1. Explicit no reserve in title
     payload_title_no_reserve = {
         "title": "Duward - Automatic - Sin precio de reserva - 1970",
         "reservePriceMet": None,
@@ -433,7 +433,7 @@ def test_reserve_status_detection() -> None:
     assert snap1 is not None
     assert snap1.reserve_status == ReserveStatus.NO_RESERVE
 
-    # 2. Sin reserva en inglés
+    # 2. No reserve in English
     payload_en_no_reserve = {
         "title": "Vintage Chronograph - No reserve price",
         "hasReservePrice": False,
@@ -443,7 +443,7 @@ def test_reserve_status_detection() -> None:
     assert snap2 is not None
     assert snap2.reserve_status == ReserveStatus.NO_RESERVE
 
-    # 3. Con reserva no alcanzada (reservePriceMet: False)
+    # 3. With reserve not met (reservePriceMet: False)
     payload_reserve_not_met = {
         "title": "Omega Seamaster",
         "hasReservePrice": True,
@@ -454,7 +454,7 @@ def test_reserve_status_detection() -> None:
     assert snap3 is not None
     assert snap3.reserve_status == ReserveStatus.NOT_MET
 
-    # 4. Con reserva alcanzada (reservePriceMet: True)
+    # 4. With reserve met (reservePriceMet: True)
     payload_reserve_met = {
         "title": "Omega Seamaster",
         "hasReservePrice": True,
@@ -467,7 +467,7 @@ def test_reserve_status_detection() -> None:
 
 
 def test_starting_lot_extraction_network_payload() -> None:
-    # Payload representativo de lote sin pujas previas
+    # Representative payload for lot with no previous bids
     payload_starting = {
         "title": "Duward Automatic",
         "localizedCurrentBidAmount": 0,
@@ -487,7 +487,7 @@ def test_starting_lot_extraction_network_payload() -> None:
 
 
 async def test_duward_starting_lot_workflow_not_discarded() -> None:
-    # Simulación de la página completa de Catawiki para el lote Duward (apertura en 1 € sin pujas)
+    # Full Catawiki page simulation for Duward lot (opening at 1 € with no bids)
     class SimulatedDuwardPage:
         def __init__(self) -> None:
             self.title = "Duward - Automatic Day Date Blue dial - Sin precio de reserva - Hombre - 1970-1979"
@@ -532,7 +532,7 @@ async def test_duward_starting_lot_workflow_not_discarded() -> None:
     assert snap.next_min_bid_eur == 1
     assert snap.reserve_status == ReserveStatus.NO_RESERVE
 
-    # Validar que WatchLot NO queda descartado como PERDIDO: Superó Máximo con max_bid_eur = 5 €
+    # Validate that WatchLot is NOT discarded as DISCARDED_MAX_EXCEEDED with max_bid_eur = 5 €
     lot = WatchLot(
         lot_id="107658268",
         url="https://www.catawiki.com/es/l/107658268-duward-automatic",
@@ -554,7 +554,7 @@ async def test_duward_starting_lot_workflow_not_discarded() -> None:
 
 @pytest.mark.asyncio
 async def test_error_page_raises_catawiki_page_load_error() -> None:
-    """Verifica que una pantalla con 'We can't load this page right now' lanza CatawikiPageLoadError y no corrompe el título."""
+    """Verify that a screen with 'We can't load this page right now' raises CatawikiPageLoadError and does not corrupt the title."""
 
     class SimulatedErrorPage:
         def locator(self, selector: str) -> SimulatedLocator:
@@ -569,18 +569,18 @@ async def test_error_page_raises_catawiki_page_load_error() -> None:
     sim = SimulatedErrorPage()
     lot_page = CatawikiLotPage(sim, confirmation_wait_seconds=0.0)
 
-    # El selector de título debe descartar el h1 de error
+    # Title selector must discard error h1
     title = await lot_page._first_text(lot_page.selectors.title_selectors)
     assert title is None
 
-    # extract_snapshot debe lanzar CatawikiPageLoadError
+    # extract_snapshot must raise CatawikiPageLoadError
     with pytest.raises(CatawikiPageLoadError, match="Página de error detectada"):
         await lot_page.extract_snapshot()
 
 
 @pytest.mark.asyncio
 async def test_missing_countdown_preserves_none_seconds_remaining() -> None:
-    """Verifica que si la cuenta atrás no está presente en una subasta abierta, seconds_remaining es None y no 0.0."""
+    """Verify that if countdown is not present in an open auction, seconds_remaining is None and not 0.0."""
 
     class SimulatedOpenLotWithoutCountdown:
         def locator(self, selector: str) -> SimulatedLocator:
@@ -592,7 +592,7 @@ async def test_missing_countdown_preserves_none_seconds_remaining() -> None:
                 return SimulatedLocator([SimulatedElement(text="270 €")])
             if selector == "body":
                 return SimulatedLocator([SimulatedElement(text="seiko presage spb045j1 sin precio de reserva")])
-            # Sin selectores de countdown
+            # No countdown selectors
             return SimulatedLocator([])
 
     sim = SimulatedOpenLotWithoutCountdown()
@@ -603,12 +603,12 @@ async def test_missing_countdown_preserves_none_seconds_remaining() -> None:
     assert snap.current_bid_eur == 250
     assert snap.next_min_bid_eur == 270
     assert snap.is_closed is False
-    assert snap.seconds_remaining is None  # Debe ser None, NUNCA 0.0
+    assert snap.seconds_remaining is None  # Must be None, NEVER 0.0
 
 
 @pytest.mark.asyncio
 async def test_blank_page_without_auction_data_raises_load_error() -> None:
-    """Verifica que una página vacía o sin datos de subasta lanza CatawikiPageLoadError."""
+    """Verify that an empty page or a page without auction data raises CatawikiPageLoadError."""
 
     class SimulatedEmptyPage:
         def locator(self, selector: str) -> SimulatedLocator:
@@ -624,12 +624,12 @@ async def test_blank_page_without_auction_data_raises_load_error() -> None:
 @pytest.mark.asyncio
 async def test_submit_minimum_bid_waits_for_async_lot_bid_confirmation_modal_and_bid_input_row() -> None:
     """
-    Verifica que:
-      1. Al enviar una puja (tanto por botón rápido como por campo numérico en BidInputRow),
-         si el modal `LotBidConfirmation` tarda varias pasadas de sondeo en montarse en el DOM,
-         `submit_minimum_bid` espera activamente y pulsa `button.c-button--primary` ('Confirmar puja').
-      2. En puja por campo numérico, selecciona `[data-sentry-component="BidInputRow"] button.c-button--secondary`
-         ('Pujar') y nunca 'Fijar puja máx'.
+    Verify that:
+      1. When placing a bid (via quick button or numeric field in BidInputRow),
+         if the `LotBidConfirmation` modal takes multiple polling passes to mount into the DOM,
+         `submit_minimum_bid` actively waits and clicks `button.c-button--primary` ('Confirmar puja').
+      2. For numeric field bidding, it selects `[data-sentry-component="BidInputRow"] button.c-button--secondary`
+         ('Pujar') and never 'Fijar puja máx'.
     """
 
     class SimulatedAsyncModalPage:
@@ -645,7 +645,7 @@ async def test_submit_minimum_bid_waits_for_async_lot_bid_confirmation_modal_and
             self.filled_bid_str: str | None = None
 
         async def evaluate(self, script: str) -> Any:
-            # __NEXT_DATA__ inicial estático en 0 € (sin pujas al abrir la pestaña)
+            # Initial static __NEXT_DATA__ at 0 € (no bids when opening tab)
             return {
                 "biddingBlockResponse": {
                     "title": self.title,
@@ -661,7 +661,7 @@ async def test_submit_minimum_bid_waits_for_async_lot_bid_confirmation_modal_and
 
         def _open_modal_after_delay(self, amount: int) -> None:
             self.pending_bid = amount
-            # El modal no estará disponible en la primera consulta (0 ms), sino tras 2 ciclos de poll
+            # The modal will not be available on first query (0 ms), but after 2 poll cycles
             self.modal_polls_remaining = 2
 
         def _confirm_modal(self) -> None:
@@ -751,21 +751,21 @@ async def test_submit_minimum_bid_waits_for_async_lot_bid_confirmation_modal_and
         confirm_poll_interval_seconds=0.01,
     )
 
-    # 1. Estado inicial antes de pujar: lote de apertura en 0 € con mínimo 1 €
+    # 1. Initial state before bidding: opening lot at 0 € with minimum 1 €
     snap0 = await lot_page.extract_snapshot()
     assert snap0.current_bid_eur == 0
     assert snap0.next_min_bid_eur == 1
     assert snap0.is_leader is False
 
-    # 2. Pujar 1 € mediante botón rápido -> espera a que aparezca LotBidConfirmation y pulsa Confirmar puja
-    # Además verifica que tras confirmar, aunque __NEXT_DATA__ siga en 0 €, el DOM en vivo manda (1 € y líder)
+    # 2. Bid 1 € via quick button -> waits for LotBidConfirmation to appear and clicks Confirmar puja
+    # Also verifies that after confirming, even if __NEXT_DATA__ remains at 0 €, live DOM governs (1 € and leader)
     snap1 = await lot_page.submit_minimum_bid(1)
     assert sim.confirm_clicks == 1
     assert snap1.is_leader is True
     assert snap1.current_bid_eur == 1
     assert snap1.next_min_bid_eur == 2
 
-    # 3. Pujar 5 € (no coincide con el botón rápido de 2 €) -> usa input[name="bid"] + BidInputRow c-button--secondary
+    # 3. Bid 5 € (does not match quick button 2 €) -> uses input[name="bid"] + BidInputRow c-button--secondary
     snap2 = await lot_page.submit_minimum_bid(5)
     assert sim.direct_pujar_clicks == 1
     assert sim.confirm_clicks == 2

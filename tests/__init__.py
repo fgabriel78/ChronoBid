@@ -1,1 +1,1 @@
-"""Suite de tests de ChronoBid."""
+"""Test suite for ChronoBid."""

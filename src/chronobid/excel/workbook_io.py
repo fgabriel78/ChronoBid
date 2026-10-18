@@ -1,4 +1,4 @@
-"""Generador de plantilla y lector/escritor resiliente de hojas Excel (.xlsx)."""
+"""Template generator and resilient reader/writer for Excel sheets (.xlsx)."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ TABLE_HEADERS: dict[str, str] = {
 
 @dataclass
 class WorkbookConfigSnapshot:
-    """Resultado de leer la configuración de entrada desde el archivo Excel."""
+    """Result of reading input configuration from the Excel file."""
 
     global_budget_eur: int
     lots: list[WatchLot]
@@ -50,7 +50,7 @@ class WorkbookConfigSnapshot:
 
 @dataclass(frozen=True)
 class ExcelInputSignature:
-    """Firma inmutable de las entradas del usuario (B1 y columnas A:B desde fila 7)."""
+    """Immutable signature of user inputs (B1 and columns A:B from row 7 onwards)."""
 
     global_budget_eur: int
     lots_inputs: tuple[tuple[str, int, int], ...]  # ((url, max_bid_eur, row_idx), ...)
@@ -58,9 +58,9 @@ class ExcelInputSignature:
 
 def extract_input_signature(file_path: str | Path) -> ExcelInputSignature | None:
     """
-    Lee de forma ligera las celdas de entrada del usuario (B1 y columnas A:B desde fila 7).
-    Devuelve ExcelInputSignature, o None si el archivo no existe, está bloqueado
-    (PermissionError/OSError) o contiene datos temporales no parseables.
+    Lightly reads user input cells (B1 and columns A:B from row 7 onwards).
+    Returns ExcelInputSignature, or None if the file does not exist, is locked
+    (PermissionError/OSError), or contains temporary unparseable data.
     """
     target = Path(file_path)
     if not target.exists():
@@ -113,7 +113,7 @@ def make_input_signature_from_memory(
     global_budget_eur: int,
     lots: list[WatchLot],
 ) -> ExcelInputSignature:
-    """Construye una firma de entrada equivalente a partir del estado en memoria."""
+    """Constructs an equivalent input signature from in-memory state."""
     inputs = tuple(
         (lot.url, lot.max_bid_eur, lot.row_index if lot.row_index is not None else 0)
         for lot in lots
@@ -125,7 +125,7 @@ def make_input_signature_from_memory(
 
 
 def _parse_positive_eur(value: Any) -> int | None:
-    """Convierte un valor de celda en un entero positivo en euros, o None si es inválido."""
+    """Converts a cell value into a positive integer in euros, or None if invalid."""
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -161,7 +161,7 @@ def create_excel_template(
     default_budget_eur: int = 1500,
     sample_rows: list[tuple[str, int]] | None = None,
 ) -> Path:
-    """Crea un fichero Excel (.xlsx) con el formato oficial de ChronoBid."""
+    """Creates an Excel file (.xlsx) with the official ChronoBid template format."""
     target = Path(file_path)
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -175,7 +175,7 @@ def create_excel_template(
     input_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
     output_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 
-    # Bloque de presupuesto (Filas 1 a 4)
+    # Budget block (Rows 1 to 4)
     budget_labels = [
         (1, "Presupuesto Global (EUR)", default_budget_eur, input_fill),
         (2, "Gastado en Firme (EUR)", 0, output_fill),
@@ -189,7 +189,7 @@ def create_excel_template(
         cell_b.font = bold_font
         cell_b.fill = fill
 
-    # Cabeceras de tabla en Fila 6
+    # Table headers on Row 6
     for col_idx, (col_letter, header_text) in enumerate(TABLE_HEADERS.items(), start=1):
         cell = ws.cell(row=HEADER_ROW, column=col_idx, value=header_text)
         cell.font = header_font
@@ -212,7 +212,7 @@ def create_excel_template(
 
 
 def read_workbook_config(file_path: str | Path) -> WorkbookConfigSnapshot:
-    """Lee el Presupuesto Global (B1) y las filas de relojes (A:B desde fila 7)."""
+    """Reads Global Budget (B1) and watch rows (A:B from row 7 onwards)."""
     target = Path(file_path)
     if not target.exists():
         raise FileNotFoundError(f"No existe el fichero Excel: {target}")
@@ -233,7 +233,7 @@ def read_workbook_config(file_path: str | Path) -> WorkbookConfigSnapshot:
             raw_url = ws.cell(row=row_idx, column=1).value
             raw_max_bid = ws.cell(row=row_idx, column=2).value
 
-            # Ignorar filas completamente vacías en las columnas de entrada A y B
+            # Ignore completely blank rows in input columns A and B
             if (raw_url is None or str(raw_url).strip() == "") and (
                 raw_max_bid is None or str(raw_max_bid).strip() == ""
             ):
@@ -254,7 +254,7 @@ def read_workbook_config(file_path: str | Path) -> WorkbookConfigSnapshot:
                 )
                 lots.append(invalid_lot)
             else:
-                # Preservar valores previos de salida si existen en el libro
+                # Preserve existing output values if present in workbook
                 existing_title = str(ws.cell(row=row_idx, column=3).value or "").strip()
                 if any(phrase in existing_title.lower() for phrase in ERROR_TITLE_PHRASES):
                     existing_title = ""
@@ -284,8 +284,8 @@ def write_workbook_state(
     lots: list[WatchLot],
 ) -> None:
     """
-    Escribe los contadores de presupuesto (B2:B4) y las columnas de estado (C:J)
-    preservando intactas las celdas de entrada del usuario (B1 y columnas A:B).
+    Writes budget counters (B2:B4) and status columns (C:J)
+    preserving user input cells intact (B1 and columns A:B).
     """
     target = Path(file_path)
     if not target.exists():
@@ -295,12 +295,12 @@ def write_workbook_state(
     try:
         ws: Worksheet = wb.active  # type: ignore[assignment]
 
-        # Actualizar únicamente celdas de salida del presupuesto (B2:B4), respetando B1
+        # Update only budget output cells (B2:B4), preserving B1
         ws["B2"].value = budget_state.spent_eur
         ws["B3"].value = budget_state.committed_leader_eur
         ws["B4"].value = budget_state.available_eur
 
-        # Construir índice de filas por URL en disco por si algún lote no tenía row_index
+        # Build row index by URL on disk in case any lot lacked row_index
         url_to_row: dict[str, int] = {}
         for r in range(FIRST_DATA_ROW, ws.max_row + 1):
             cell_url = ws.cell(row=r, column=1).value
@@ -318,7 +318,7 @@ def write_workbook_state(
                 next_free_row += 1
                 lot.row_index = row_idx
 
-            # No sobrescribir nunca A y B si el usuario ya tiene valores en esa fila
+            # Never overwrite A and B if the user already has values in that row
             if ws.cell(row=row_idx, column=1).value is None and lot.url:
                 ws.cell(row=row_idx, column=1, value=lot.url)
             if ws.cell(row=row_idx, column=2).value is None and lot.max_bid_eur > 0:
@@ -339,7 +339,7 @@ def write_workbook_state(
             ws.cell(row=row_idx, column=9, value=lot.effective_ceiling_eur)
             ws.cell(row=row_idx, column=10, value=lot.notes)
 
-        # Escritura atómica mediante fichero temporal en el mismo directorio
+        # Atomic write via temporary file in the same directory
         fd, tmp_name = tempfile.mkstemp(
             prefix=f".{target.stem}_",
             suffix=".xlsx.tmp",

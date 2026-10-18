@@ -1,4 +1,4 @@
-"""Gestor atómico de presupuesto en tiempo real (BudgetLedger) con asyncio.Lock."""
+"""Real-time atomic budget manager (BudgetLedger) using asyncio.Lock."""
 
 from __future__ import annotations
 
@@ -9,12 +9,11 @@ from chronobid.models.auction import GlobalBudgetState
 
 class BudgetLedger:
     """
-    Contabilidad atómica del presupuesto global en euros:
-        Disponible = Global - Gastado en firme (Ganados) - Comprometido (Líder provisional)
+    Atomic accounting of the global budget in euros:
+        Available = Global - Firmly spent (Won) - Committed (Provisional leader)
 
-    Todas las operaciones de reserva, liberación y adjudicación están protegidas
-    por un único asyncio.Lock para impedir condiciones de carrera entre pestañas
-    concurrentes en Modo Asalto.
+    All reservation, release, and award operations are protected by a single
+    asyncio.Lock to prevent race conditions across concurrent Assault Mode tabs.
     """
 
     def __init__(self, global_budget_eur: int) -> None:
@@ -31,36 +30,36 @@ class BudgetLedger:
 
     @property
     def spent_eur(self) -> int:
-        """Suma total de relojes ya ganados en firme."""
+        """Total sum of watches firmly won."""
         return sum(self._won_lots.values())
 
     @property
     def committed_leader_eur(self) -> int:
-        """Suma total de pujas activas en las que el usuario es líder provisional."""
+        """Total sum of active bids where the user is provisional leader."""
         return sum(self._committed_lots.values())
 
     @property
     def available_eur(self) -> int:
-        """Saldo disponible actual para nuevas pujas o incrementos diferenciales."""
+        """Current available balance for new bids or differential increments."""
         return max(0, self._global_budget_eur - self.spent_eur - self.committed_leader_eur)
 
     def get_committed(self, lot_id: str) -> int:
-        """Devuelve el importe actualmente comprometido como líder en `lot_id`."""
+        """Returns the amount currently committed as leader on `lot_id`."""
         return self._committed_lots.get(lot_id, 0)
 
     def get_won(self, lot_id: str) -> int:
-        """Devuelve el importe adjudicado en firme para `lot_id` (0 si no ganado)."""
+        """Returns the firmly awarded amount for `lot_id` (0 if not won)."""
         return self._won_lots.get(lot_id, 0)
 
     def max_purchasing_power_for_lot(self, lot_id: str) -> int:
         """
-        Devuelve el importe total máximo que podría pujar `lot_id` con el saldo actual,
-        sumando el saldo libre más lo que `lot_id` ya tiene comprometido como líder.
+        Returns the maximum total amount `lot_id` could bid with current balance,
+        adding free balance plus what `lot_id` already has committed as leader.
         """
         return self.available_eur + self.get_committed(lot_id)
 
     def snapshot(self) -> GlobalBudgetState:
-        """Genera una instantánea consistente del estado del presupuesto."""
+        """Generates a consistent snapshot of the budget state."""
         return GlobalBudgetState(
             global_budget_eur=self._global_budget_eur,
             spent_eur=self.spent_eur,
@@ -75,12 +74,12 @@ class BudgetLedger:
         max_lot_bid_eur: int | None = None,
     ) -> bool:
         """
-        Intenta comprometer de forma atómica el importe `new_bid_eur` para `lot_id`.
+        Atomically attempts to commit `new_bid_eur` for `lot_id`.
 
-        - Si `max_lot_bid_eur` se especifica y `new_bid_eur > max_lot_bid_eur`, rechaza.
-        - Si el lote ya tenía un compromiso previo menor (p. ej. escalera de reserva),
-          descuenta únicamente el incremento diferencial (`new_bid_eur - prev_committed`).
-        - Devuelve True si se reservó el saldo, False si excede el techo o el presupuesto disponible.
+        - If `max_lot_bid_eur` is specified and `new_bid_eur > max_lot_bid_eur`, rejects.
+        - If the lot already had a smaller prior commitment (e.g., reserve ladder),
+          deducts only the differential increment (`new_bid_eur - prev_committed`).
+        - Returns True if balance was reserved, False if exceeding ceiling or available budget.
         """
         if new_bid_eur <= 0:
             return False
@@ -94,7 +93,7 @@ class BudgetLedger:
             prev_committed = self._committed_lots.get(lot_id, 0)
             delta = new_bid_eur - prev_committed
             if delta <= 0:
-                # Ya tenía reservado al menos ese importe
+                # Already had at least this amount reserved
                 self._committed_lots[lot_id] = new_bid_eur
                 return True
 
@@ -106,23 +105,23 @@ class BudgetLedger:
 
     async def release(self, lot_id: str) -> int:
         """
-        Libera al instante el importe comprometido en `lot_id` (cuando otro postor
-        supera la puja o falla el envío en UI o termina sin adjudicarse por reserva).
-        Devuelve el importe liberado en euros.
+        Instantly releases the amount committed on `lot_id` (when another bidder
+        outbids, UI submission fails, or ends unawarded due to reserve).
+        Returns the released amount in euros.
         """
         async with self._lock:
             return self._committed_lots.pop(lot_id, 0)
 
     async def sync_leader_commitment(self, lot_id: str, committed_amount_eur: int) -> int:
         """
-        Sincroniza de forma atómica el importe real comprometido en `lot_id` cuando
-        una lectura de mercado confirma que el usuario es actualmente el líder provisional.
+        Atomically synchronizes the actual amount committed on `lot_id` when
+        a market reading confirms that the user is currently the provisional leader.
 
-        - Si `committed_amount_eur <= 0`, libera cualquier compromiso previo del lote.
-        - Si el lote ya consta como ganado en firme, no altera `_committed_lots`.
-        - Acota el compromiso al máximo saldo disponible para preservar siempre
-          el invariante `spent_eur + committed_leader_eur <= global_budget_eur`.
-        - Devuelve el importe que queda efectivamente registrado como comprometido.
+        - If `committed_amount_eur <= 0`, releases any prior lot commitment.
+        - If the lot is already firmly won, leaves `_committed_lots` untouched.
+        - Bounds commitment to maximum available balance to always preserve
+          the `spent_eur + committed_leader_eur <= global_budget_eur` invariant.
+        - Returns the amount effectively registered as committed.
         """
         async with self._lock:
             if lot_id in self._won_lots:
@@ -143,8 +142,8 @@ class BudgetLedger:
 
     async def confirm_won(self, lot_id: str, final_amount_eur: int | None = None) -> int:
         """
-        Convierte el compromiso provisional de `lot_id` en gasto en firme tras ganar la subasta.
-        Devuelve el importe registrado como ganado.
+        Converts the provisional commitment of `lot_id` into firm expenditure after winning the auction.
+        Returns the amount recorded as won.
         """
         async with self._lock:
             prev_committed = self._committed_lots.pop(lot_id, 0)
@@ -159,7 +158,7 @@ class BudgetLedger:
             return amount
 
     async def update_global_budget(self, new_budget_eur: int) -> GlobalBudgetState:
-        """Actualiza el presupuesto global en caliente si no es inferior a lo ya comprometido+gastado."""
+        """Updates the global budget live if not lower than already committed+spent."""
         if new_budget_eur <= 0:
             raise ValueError("El presupuesto global debe ser mayor que 0 EUR.")
         async with self._lock:

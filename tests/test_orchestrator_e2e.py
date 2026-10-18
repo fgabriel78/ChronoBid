@@ -1,4 +1,4 @@
-"""Simulación End-to-End de AuctionOrchestrator con múltiples subastas solapadas, +90s y reserva."""
+"""End-to-End simulation of AuctionOrchestrator with multiple overlapping auctions, +90s overtime, and reserve price."""
 
 import asyncio
 from pathlib import Path
@@ -18,10 +18,10 @@ from chronobid.orchestrator import AuctionOrchestrator
 
 class SimulatedLiveAuctionRoom:
     """
-    Simulador determinista por ticks de una subasta en Catawiki con:
-      - Cuenta atrás que decrece en cada lectura.
-      - Rival automático hasta `rival_max_bid_eur` que extiende el reloj +90s al contraatacar.
-      - Precio de reserva oculto `reserve_price_eur` que requiere escalera para desbloquearse.
+    Deterministic tick-based simulator for a Catawiki auction with:
+      - Countdown decreasing on each reading.
+      - Automated rival up to `rival_max_bid_eur` that extends the clock +90s when counterattacking.
+      - Hidden reserve price `reserve_price_eur` that requires a ladder to unlock.
     """
 
     def __init__(
@@ -59,8 +59,8 @@ class SimulatedLiveAuctionRoom:
 
     async def extract_snapshot(self) -> LotPageSnapshot:
         if not self.is_closed:
-            # Si el agente es líder con la reserva alcanzada (o sin reserva) y ningún rival
-            # puede superar la puja, el tiempo restante se agota y la subasta cierra.
+            # If the agent is leader with reserve met (or no reserve) and no rival
+            # can outbid, remaining time runs out and the auction closes.
             if (
                 self.agent_is_leader
                 and self.reserve_status.is_satisfied
@@ -84,16 +84,16 @@ class SimulatedLiveAuctionRoom:
         self.current_bid_eur = bid_amount_eur
         self.agent_is_leader = True
 
-        # Regla de Catawiki: puja en los últimos 60s extiende/reinicia en +90s si un rival responde
+        # Catawiki rule: bid in the last 60s extends/resets to +90s if a rival responds
         next_step = self.next_min_bid_eur
         if next_step <= self.rival_max_bid_eur:
-            # El rival contraataca dentro de la prórroga de +90s
+            # The rival counterattacks within the +90s overtime
             self.current_bid_eur = next_step
             self.agent_is_leader = False
             self.seconds_remaining = 90.0
             self.overtime_extensions += 1
         elif self.reserve_status == ReserveStatus.NOT_MET:
-            # Sigue faltando desbloquear la reserva en el siguiente tick (< 25s)
+            # Still needs reserve unlocking in the next tick (< 25s)
             self.seconds_remaining = min(self.seconds_remaining, 18.0)
 
         return self._current_snapshot()
@@ -117,19 +117,19 @@ async def test_orchestrator_e2e_overlapping_auctions_reserve_ladder_and_portfoli
     tmp_path: Path,
 ) -> None:
     """
-    Simulación E2E completa con 4 relojes y un Presupuesto Global compartido de 700 €:
-      - Reloj 1 (Omega): M_1 = 500 €, arranca en 200 €, un rival empuja hasta 520 € (> M_1).
-        El agente puja en < 25s, entra en prórroga +90s y cuando el rival supera 500 €
-        abandona y libera el presupuesto al instante.
-      - Reloj 2 (Seiko): M_2 = 300 €, arranca en 160 €, sin rival pero con Precio de Reserva
-        oculto en 220 €. El agente entra en < 25s (170 €) y sube escalón a escalón
-        (190 € -> 200 € -> 220 €) deteniéndose exactamente al desbloquear la reserva en 220 €.
-      - Reloj 3 (Tissot): M_3 = 280 €, arranca en 180 €, un rival puja hasta 220 €, el agente
-        contraataca en prórroga (+90s) con 240 € y gana el reloj por 240 €.
-      - Reloj 4 (Longines): M_4 = 350 €, arranca en 220 €; como el saldo disponible restante
-        tras ganar Reloj 2 (220 €) y Reloj 3 (240 €) es 700 - 460 = 240 €, y el rival sube
-        el lote a 260 € (> 240 € disponible), el agente respeta el invariante de presupuesto
-        global y termina en PERDIDO: Sin Presupuesto sin exceder jamás los 700 €.
+    Complete E2E simulation with 4 watches and a shared Global Budget of 700 €:
+      - Watch 1 (Omega): M_1 = 500 €, starts at 200 €, a rival pushes to 520 € (> M_1).
+        The agent bids at < 25s, enters +90s overtime, and when the rival exceeds 500 €
+        abandons and releases budget immediately.
+      - Watch 2 (Seiko): M_2 = 300 €, starts at 160 €, no rival but with hidden Reserve Price
+        at 220 €. The agent enters at < 25s (170 €) and climbs step by step
+        (190 € -> 200 € -> 220 €), stopping exactly upon unlocking the reserve at 220 €.
+      - Watch 3 (Tissot): M_3 = 280 €, starts at 180 €, a rival bids up to 220 €, the agent
+        counterattacks in overtime (+90s) with 240 € and wins the watch for 240 €.
+      - Watch 4 (Longines): M_4 = 350 €, starts at 220 €; since remaining available balance
+        after winning Watch 2 (220 €) and Watch 3 (240 €) is 700 - 460 = 240 €, and the rival raises
+        the lot to 260 € (> 240 € available), the agent respects the global budget invariant
+        and finishes in PERDIDO: Sin Presupuesto without ever exceeding 700 €.
     """
     excel_path = tmp_path / "cartera_e2e.xlsx"
     url_1 = "https://www.catawiki.com/es/l/900001-omega"
@@ -153,7 +153,7 @@ async def test_orchestrator_e2e_overlapping_auctions_reserve_ladder_and_portfoli
             title="Omega Seamaster 1968",
             initial_bid_eur=240,
             initial_seconds=30.0,
-            rival_max_bid_eur=320,  # Superará el máximo de 300 € tras prórroga +90s
+            rival_max_bid_eur=320,  # Will exceed max of 300 € after +90s overtime
             reserve_price_eur=0,
             tick_decrement_seconds=10.0,
         ),
@@ -162,21 +162,21 @@ async def test_orchestrator_e2e_overlapping_auctions_reserve_ladder_and_portfoli
             initial_bid_eur=150,
             initial_seconds=30.0,
             rival_max_bid_eur=0,
-            reserve_price_eur=190,  # Reserva oculta en 190 €
+            reserve_price_eur=190,  # Hidden reserve at 190 €
             tick_decrement_seconds=4.0,
         ),
         url_3: SimulatedLiveAuctionRoom(
             title="Tissot PRX Powermatic",
             initial_bid_eur=160,
             initial_seconds=35.0,
-            rival_max_bid_eur=180,  # Provocará prórroga +90s y se rendirá ante 190 €
+            rival_max_bid_eur=180,  # Will cause +90s overtime and surrender to 190 €
             reserve_price_eur=0,
             tick_decrement_seconds=15.0,
         ),
         url_4: SimulatedLiveAuctionRoom(
             title="Longines Flagship Heritage",
             initial_bid_eur=310,
-            initial_seconds=150.0,  # Cierra después de los relojes 2 y 3 (disponible = 320 < siguiente mín 330)
+            initial_seconds=150.0,  # Closes after watches 2 and 3 (available = 320 < next min 330)
             rival_max_bid_eur=350,
             reserve_price_eur=0,
             tick_decrement_seconds=15.0,
@@ -200,29 +200,29 @@ async def test_orchestrator_e2e_overlapping_auctions_reserve_ladder_and_portfoli
 
     lot1, lot2, lot3, lot4 = orchestrator.lots
 
-    # Reloj 1: superó su puja máxima tras prórroga y liberó todo su presupuesto
+    # Watch 1: exceeded max bid after overtime and released all its budget
     assert lot1.status == AuctionStatus.DISCARDED_MAX_EXCEEDED
     assert rooms[url_1].overtime_extensions >= 1
 
-    # Reloj 2: ganó desbloqueando la reserva paso a paso exactamente en 190 € (< 250 € máx)
+    # Watch 2: won by unlocking reserve step by step at exactly 190 € (< 250 € max)
     assert lot2.status == AuctionStatus.WON
     assert lot2.current_bid_eur == 190
     assert rooms[url_2].agent_bids_history == [160, 170, 180, 190]
 
-    # Reloj 3: ganó tras contraatacar en la prórroga de +90s en 190 €
+    # Watch 3: won after counterattacking in +90s overtime at 190 €
     assert lot3.status == AuctionStatus.WON
     assert lot3.current_bid_eur == 190
     assert rooms[url_3].overtime_extensions >= 1
 
-    # Reloj 4: no pudo pujar 330 € porque el saldo disponible restante era 700 - 380 = 320 €
+    # Watch 4: could not bid 330 € because remaining available balance was 700 - 380 = 320 €
     assert lot4.status == AuctionStatus.LOST_NO_BUDGET
 
-    # Contabilidad final del Ledger
+    # Final Ledger accounting
     assert orchestrator.ledger.spent_eur == 380
     assert orchestrator.ledger.committed_leader_eur == 0
     assert orchestrator.ledger.available_eur == 320
 
-    # Verificar que todo quedó fielmente reflejado en el archivo Excel final
+    # Verify everything was faithfully reflected in final Excel file
     wb = load_workbook(excel_path, data_only=True)
     ws = wb.active
     assert ws is not None
@@ -247,7 +247,7 @@ async def test_orchestrator_patrol_handles_transient_error_without_losing_lot(tm
     url = "https://www.catawiki.com/es/l/107658893-seiko-presage"
     create_excel_template(excel_path, default_budget_eur=1000, sample_rows=[(url, 400)])
 
-    # Establecer título inicial legítimo en el Excel
+    # Set legitimate initial title in Excel
     wb = load_workbook(excel_path)
     ws = wb.active
     assert ws is not None
@@ -262,9 +262,9 @@ async def test_orchestrator_patrol_handles_transient_error_without_losing_lot(tm
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # Simular error transitorio en la primera pasada
+                # Simulate transient error on first pass
                 raise CatawikiPageLoadError("Página de error detectada: 'we can't load this page right now'")
-            # Segunda pasada exitosa
+            # Second pass succeeds
             return LotPageSnapshot(
                 title="Seiko - Presage - SPB045J1",
                 current_bid_eur=240,
@@ -293,15 +293,15 @@ async def test_orchestrator_patrol_handles_transient_error_without_losing_lot(tm
     lot = orchestrator.lots[0]
     assert lot.title == "Seiko - Presage - SPB045J1"
 
-    # Primera pasada: debe fallar con CatawikiPageLoadError pero mantener el lote vivo
+    # First pass: must fail with CatawikiPageLoadError but keep lot alive
     await orchestrator.run_patrol_step()
     assert lot.status.is_active is True
     assert lot.status != AuctionStatus.LOST_OTHER
     assert lot.is_closed is False
-    assert lot.title == "Seiko - Presage - SPB045J1"  # No sobreescrito por error
+    assert lot.title == "Seiko - Presage - SPB045J1"  # Not overwritten by error
     assert "Error puntual de carga en Catawiki" in (lot.notes or "")
 
-    # Segunda pasada: lectura exitosa
+    # Second pass: successful read
     await orchestrator.run_patrol_step()
     assert lot.status == AuctionStatus.PATROL
     assert lot.is_closed is False
@@ -325,7 +325,7 @@ async def test_orchestrator_patrol_syncs_and_releases_leader_commitment_in_ledge
             nonlocal step
             step += 1
             if step == 1:
-                # Ronda 1 de Patrulla: el usuario ya es líder por 1 € (faltan 594459s)
+                # Patrol Round 1: user is already leader for 1 € (594459s remaining)
                 return LotPageSnapshot(
                     title="Citizen Automatic",
                     current_bid_eur=1,
@@ -335,7 +335,7 @@ async def test_orchestrator_patrol_syncs_and_releases_leader_commitment_in_ledge
                     reserve_status=ReserveStatus.NO_RESERVE,
                     is_closed=False,
                 )
-            # Ronda 2 de Patrulla: otro postor supera la puja a 5 € durante la patrulla
+            # Patrol Round 2: another bidder outbids to 5 € during patrol
             return LotPageSnapshot(
                 title="Citizen Automatic",
                 current_bid_eur=5,
@@ -363,7 +363,7 @@ async def test_orchestrator_patrol_syncs_and_releases_leader_commitment_in_ledge
 
     lot = orchestrator.lots[0]
 
-    # Ronda 1: debe detectar LIDER (1 €) y reflejar 1 € en Comprometido y 1499 € en Disponible
+    # Round 1: must detect LEADER (1 €) and reflect 1 € committed and 1499 € available
     await orchestrator.run_patrol_step()
     await orchestrator.sync_worker.flush_once()
 
@@ -383,7 +383,7 @@ async def test_orchestrator_patrol_syncs_and_releases_leader_commitment_in_ledge
     assert ws["F7"].value == 1
     wb.close()
 
-    # Ronda 2: otro postor supera la puja en patrulla -> debe liberar el 1 € al instante
+    # Round 2: another bidder outbids in patrol -> must release 1 € immediately
     await orchestrator.run_patrol_step(force=True)
     await orchestrator.sync_worker.flush_once()
 
@@ -404,11 +404,11 @@ async def test_orchestrator_unconfirmed_bid_releases_budget_without_false_outbid
     tmp_path: Path,
 ) -> None:
     """
-    Si submit_minimum_bid devuelve un snapshot donde la puja no llegó a confirmarse
-    (is_leader=False y current_bid_eur < bid_amt), el orquestador:
-      1. No debe registrar lot.my_last_bid_eur ni marcar falsamente el lote como SUPERADO.
-      2. Debe liberar de inmediato la reserva en BudgetLedger.
-      3. Puede reintentar la puja en el siguiente tick de asalto y ganarla cuando se confirma.
+    If submit_minimum_bid returns a snapshot where the bid was not confirmed
+    (is_leader=False and current_bid_eur < bid_amt), the orchestrator:
+      1. Must not record lot.my_last_bid_eur nor falsely mark lot as OUTBID.
+      2. Must immediately release reservation in BudgetLedger.
+      3. Can retry the bid on next assault tick and win it when confirmed.
     """
     excel_path = tmp_path / "cartera_unconfirmed_bid.xlsx"
     url = "https://www.catawiki.com/es/l/900099-opening-lot"
@@ -432,7 +432,7 @@ async def test_orchestrator_unconfirmed_bid_releases_budget_without_false_outbid
         async def extract_snapshot(self) -> LotPageSnapshot:
             self.extract_calls += 1
             if self.extract_calls == 2:
-                # Justo al inicio del tick 2, capturamos cómo quedó el lote tras el intento fallido del tick 1
+                # Right at tick 2 start, capture lot state after failed attempt in tick 1
                 orch = self.orchestrator_ref[0]
                 state_after_first_attempt["my_last_bid_eur"] = self.lot.my_last_bid_eur
                 state_after_first_attempt["status"] = self.lot.status
@@ -463,7 +463,7 @@ async def test_orchestrator_unconfirmed_bid_releases_budget_without_false_outbid
         async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
             self.submit_calls += 1
             if self.submit_calls == 1:
-                # Primer intento: el modal de confirmación no llegó a aceptarse en Catawiki
+                # First attempt: confirmation modal was not accepted on Catawiki
                 return LotPageSnapshot(
                     title="Tissot Opening Lot",
                     current_bid_eur=0,
@@ -474,7 +474,7 @@ async def test_orchestrator_unconfirmed_bid_releases_budget_without_false_outbid
                     is_closed=False,
                 )
 
-            # Segundo intento: la confirmación se completa y pasamos a ser líderes con 1 €
+            # Second attempt: confirmation completes and we become leader with 1 €
             self.confirmed = True
             return LotPageSnapshot(
                 title="Tissot Opening Lot",
@@ -512,14 +512,14 @@ async def test_orchestrator_unconfirmed_bid_releases_budget_without_false_outbid
     await orchestrator._run_assault_for_lot(lot)
     await orchestrator.sync_worker.flush_once()
 
-    # Verificaciones tras el primer intento no confirmado
+    # Verifications after first unconfirmed attempt
     assert state_after_first_attempt["my_last_bid_eur"] == 0
     assert state_after_first_attempt["status"] == AuctionStatus.ASSAULT
     assert state_after_first_attempt["status"] != AuctionStatus.OUTBID
     assert state_after_first_attempt["committed_eur"] == 0
     assert "no confirmada" in str(state_after_first_attempt["notes"])
 
-    # Verificaciones tras el reintento confirmado y cierre de la subasta
+    # Verifications after confirmed retry and auction close
     assert lot.my_last_bid_eur == 1
     assert lot.current_bid_eur == 1
     assert lot.status == AuctionStatus.WON
@@ -529,9 +529,9 @@ async def test_orchestrator_unconfirmed_bid_releases_budget_without_false_outbid
 @pytest.mark.asyncio
 async def test_orchestrator_patrol_interval_independent_from_concurrent_assault(tmp_path: Path) -> None:
     """
-    Verifica que la existencia de un lote en seguimiento continuo de Modo Asalto
-    no acelera las consultas de los lotes en Modo Patrulla, manteniéndolas en su
-    intervalo espaciado independiente.
+    Verify that the existence of a lot in continuous Assault Mode tracking
+    does not accelerate queries for lots in Patrol Mode, keeping them in their
+    independent spaced interval.
     """
     excel_path = tmp_path / "cartera_mixta.xlsx"
     url_assault = "https://www.catawiki.com/es/l/900010-reloj-asalto"
@@ -595,8 +595,8 @@ async def test_orchestrator_patrol_interval_independent_from_concurrent_assault(
         excel_path,
         controller_factory=controller_factory,
         assault_threshold_seconds=300.0,
-        patrol_interval_seconds=1.0,  # 1.0s para patrulla
-        assault_tick_seconds=0.01,    # 10 ms para asalto
+        patrol_interval_seconds=1.0,  # 1.0s for patrol
+        assault_tick_seconds=0.01,    # 10 ms for assault
         snipe_window_seconds=25.0,
         excel_retry_seconds=0.01,
     )
@@ -612,20 +612,20 @@ async def test_orchestrator_patrol_interval_independent_from_concurrent_assault(
     orchestrator.request_stop()
     await run_task
 
-    # Verificaciones:
-    # 1. El reloj en asalto se consultó varias veces a alta frecuencia y finalizó ganado
+    # Verifications:
+    # 1. The assault watch was queried multiple times at high frequency and ended as won
     assert assault_query_count >= 5
     assert lot_assault.status == AuctionStatus.WON
 
-    # 2. El reloj en patrulla solo se consultó 1 vez en la ronda inicial, no en bucle continuo
+    # 2. The patrol watch was only queried once in the initial round, not in a tight loop
     assert patrol_query_count == 1
     assert lot_patrol.status == AuctionStatus.PATROL
 
 
 def test_orchestrator_calculate_patrol_wait_seconds_adaptive(tmp_path: Path) -> None:
     """
-    Verifica que _calculate_patrol_wait_seconds() se adapta al tiempo restante
-    hacia el umbral de 300s cuando algún lote está próximo a conmutar a asalto.
+    Verify that _calculate_patrol_wait_seconds() adapts to remaining time
+    towards the 300s threshold when a lot is close to switching to assault.
     """
     excel_path = tmp_path / "cartera_wait.xlsx"
     url1 = "https://www.catawiki.com/es/l/900001-near-assault"
@@ -638,13 +638,13 @@ def test_orchestrator_calculate_patrol_wait_seconds_adaptive(tmp_path: Path) -> 
         patrol_interval_seconds=15.0,
     )
     lot1, lot2 = orchestrator.lots
-    lot1.seconds_remaining = 304.0  # 4 segundos antes de entrar en asalto (300s)
+    lot1.seconds_remaining = 304.0  # 4 seconds before entering assault (300s)
     lot2.seconds_remaining = 1800.0
 
     wait = orchestrator._calculate_patrol_wait_seconds()
     assert wait == 4.0
 
-    # Si todos los relojes están lejos (> 15s del umbral), espera los 15s estándar
+    # If all watches are far (> 15s from threshold), waits standard 15s
     lot1.seconds_remaining = 500.0
     wait_far = orchestrator._calculate_patrol_wait_seconds()
     assert wait_far == 15.0
@@ -653,8 +653,8 @@ def test_orchestrator_calculate_patrol_wait_seconds_adaptive(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_orchestrator_dynamic_excel_budget_and_max_bid_update(tmp_path: Path) -> None:
     """
-    Verifica que al modificar el presupuesto global (B1) y la puja máxima limpia (columna B)
-    en el fichero Excel durante la ejecución, el orquestador actualiza el Ledger y los techos en caliente.
+    Verify that modifying global budget (B1) and clean max bid (column B)
+    in Excel during execution hot-reloads Ledger and dynamic ceilings.
     """
     excel_path = tmp_path / "cartera_live_budget.xlsx"
     url = "https://www.catawiki.com/es/l/950001-omega-speedmaster"
@@ -690,11 +690,11 @@ async def test_orchestrator_dynamic_excel_budget_and_max_bid_update(tmp_path: Pa
     assert orchestrator.ledger.global_budget_eur == 1000
     assert orchestrator.lots[0].max_bid_eur == 500
 
-    # Ejecutar una patrulla inicial
+    # Run initial patrol
     await orchestrator.run_patrol_step()
     assert orchestrator.lots[0].status == AuctionStatus.PATROL
 
-    # Modificar el Excel en disco: B1 = 2500, puja máxima en B7 = 750
+    # Modify Excel on disk: B1 = 2500, max bid in B7 = 750
     wb = load_workbook(excel_path)
     ws = wb.active
     ws["B1"].value = 2500
@@ -702,7 +702,7 @@ async def test_orchestrator_dynamic_excel_budget_and_max_bid_update(tmp_path: Pa
     wb.save(excel_path)
     wb.close()
 
-    # Comprobar la recarga en caliente
+    # Check hot reload
     reloaded = await orchestrator._check_and_reload_excel()
     assert reloaded is True
     assert orchestrator.ledger.global_budget_eur == 2500
@@ -714,8 +714,8 @@ async def test_orchestrator_dynamic_excel_budget_and_max_bid_update(tmp_path: Pa
 @pytest.mark.asyncio
 async def test_orchestrator_dynamic_excel_revive_discarded_lot(tmp_path: Path) -> None:
     """
-    Verifica que si un lote estaba descartado por superar su tope previo (DISCARDED_MAX_EXCEEDED),
-    un aumento de la puja máxima limpia en el Excel reactiva automáticamente el lote.
+    Verify that if a lot was discarded for exceeding previous cap (DISCARDED_MAX_EXCEEDED),
+    increasing clean max bid in Excel automatically reactivates the lot.
     """
     excel_path = tmp_path / "cartera_revive.xlsx"
     url = "https://www.catawiki.com/es/l/950002-rolex-submariner"
@@ -726,7 +726,7 @@ async def test_orchestrator_dynamic_excel_revive_discarded_lot(tmp_path: Path) -
             return LotPageSnapshot(
                 title="Rolex Submariner",
                 current_bid_eur=350,
-                next_min_bid_eur=380,  # 380 > 300 -> se descarta
+                next_min_bid_eur=380,  # 380 > 300 -> gets discarded
                 seconds_remaining=800.0,
                 is_leader=False,
                 reserve_status=ReserveStatus.NO_RESERVE,
@@ -751,7 +751,7 @@ async def test_orchestrator_dynamic_excel_revive_discarded_lot(tmp_path: Path) -
     lot = orchestrator.lots[0]
     assert lot.status == AuctionStatus.DISCARDED_MAX_EXCEEDED
 
-    # El usuario edita el Excel y sube el tope a 450 € (>= 380 €)
+    # User edits Excel and raises cap to 450 € (>= 380 €)
     wb = load_workbook(excel_path)
     ws = wb.active
     ws["B7"].value = 450
@@ -768,8 +768,8 @@ async def test_orchestrator_dynamic_excel_revive_discarded_lot(tmp_path: Path) -
 @pytest.mark.asyncio
 async def test_orchestrator_dynamic_excel_add_and_remove_lot(tmp_path: Path) -> None:
     """
-    Verifica que añadir una fila nueva en el Excel da de alta el lote en PENDING y lo patrulla,
-    y que borrar una fila lo elimina del seguimiento y cancela sus tareas.
+    Verify that adding a new row in Excel enrolls lot in PENDING and patrols it,
+    and deleting a row removes it from tracking and cancels its tasks.
     """
     excel_path = tmp_path / "cartera_add_remove.xlsx"
     url1 = "https://www.catawiki.com/es/l/950003-tag-heuer"
@@ -811,7 +811,7 @@ async def test_orchestrator_dynamic_excel_add_and_remove_lot(tmp_path: Path) -> 
     )
     assert len(orchestrator.lots) == 1
 
-    # 1. Añadir un nuevo reloj en fila 8
+    # 1. Add new watch in row 8
     wb = load_workbook(excel_path)
     ws = wb.active
     ws["A8"].value = url2
@@ -826,12 +826,12 @@ async def test_orchestrator_dynamic_excel_add_and_remove_lot(tmp_path: Path) -> 
     assert orchestrator.lots[1].max_bid_eur == 600
     assert orchestrator.lots[1].status == AuctionStatus.PENDING
 
-    # Patrullar para asegurar que el nuevo lote se procesa
+    # Patrol to ensure new lot is processed
     await orchestrator.run_patrol_step()
     assert any("950004" in v for v in visited_lots)
     assert orchestrator.lots[1].status == AuctionStatus.PATROL
 
-    # 2. Eliminar el primer reloj (fila 7) en el Excel
+    # 2. Delete first watch (row 7) in Excel
     wb = load_workbook(excel_path)
     ws = wb.active
     ws["A7"].value = None
@@ -848,8 +848,8 @@ async def test_orchestrator_dynamic_excel_add_and_remove_lot(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_orchestrator_dynamic_excel_ignores_internal_writes(tmp_path: Path) -> None:
     """
-    Verifica que las escrituras periódicas de salida de ChronoBid (columnas C:J y B2:B4)
-    no disparan recargas en caliente espurias gracias a la firma de entradas.
+    Verify that periodic ChronoBid output writes (columns C:J and B2:B4)
+    do not trigger spurious hot reloads thanks to input signature.
     """
     excel_path = tmp_path / "cartera_no_retrigger.xlsx"
     url = "https://www.catawiki.com/es/l/950005-cartier-santos"
@@ -860,7 +860,7 @@ async def test_orchestrator_dynamic_excel_ignores_internal_writes(tmp_path: Path
         excel_poll_interval_seconds=0.01,
     )
 
-    # Modificar únicamente columnas de salida (B2 gastado, C7 título, E7 estado)
+    # Modify only output columns (B2 spent, C7 title, E7 status)
     wb = load_workbook(excel_path)
     ws = wb.active
     ws["B2"].value = 200
@@ -869,7 +869,7 @@ async def test_orchestrator_dynamic_excel_ignores_internal_writes(tmp_path: Path
     wb.save(excel_path)
     wb.close()
 
-    # _check_and_reload_excel debe detectar que los inputs (B1, A:B) no cambiaron
+    # _check_and_reload_excel must detect that inputs (B1, A:B) did not change
     changed = await orchestrator._check_and_reload_excel()
     assert changed is False
 
@@ -879,8 +879,8 @@ async def test_orchestrator_dynamic_excel_tolerates_transient_permission_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Verifica que si el archivo Excel está transitoriamente bloqueado (PermissionError / OSError),
-    _check_and_reload_excel maneja el error sin lanzar excepción y permite reintentar en el siguiente sondeo.
+    Verify that if Excel file is transiently locked (PermissionError / OSError),
+    _check_and_reload_excel handles the error without raising an exception and retries on next poll.
     """
     excel_path = tmp_path / "cartera_lock.xlsx"
     url = "https://www.catawiki.com/es/l/950006-zenith-el-primero"
@@ -891,18 +891,18 @@ async def test_orchestrator_dynamic_excel_tolerates_transient_permission_error(
         excel_poll_interval_seconds=0.01,
     )
 
-    # Modificar el archivo en disco
+    # Modify file on disk
     wb = load_workbook(excel_path)
     ws = wb.active
     ws["B1"].value = 3500
     wb.save(excel_path)
     wb.close()
 
-    # Simular bloqueo de Windows en extract_input_signature
+    # Simulate Windows lock in extract_input_signature
     import chronobid.orchestrator as orch_module
 
     def mock_extract(path):
-        return None  # Devuelve None tal como ocurre ante PermissionError
+        return None  # Returns None as happens on PermissionError
 
     monkeypatch.setattr(orch_module, "extract_input_signature", mock_extract)
 
@@ -910,7 +910,7 @@ async def test_orchestrator_dynamic_excel_tolerates_transient_permission_error(
     assert changed is False
     assert orchestrator.ledger.global_budget_eur == 2000
 
-    # Quitar el mock: el siguiente sondeo debe reconciliar correctamente
+    # Remove mock: next poll should reconcile properly
     monkeypatch.undo()
     changed_retry = await orchestrator._check_and_reload_excel()
     assert changed_retry is True
@@ -920,9 +920,9 @@ async def test_orchestrator_dynamic_excel_tolerates_transient_permission_error(
 @pytest.mark.asyncio
 async def test_orchestrator_run_until_complete_live_reload_wakes_patrol(tmp_path: Path) -> None:
     """
-    Verifica que al añadir un reloj en el Excel durante run_until_complete(),
-    la espera de patrulla despierta de inmediato mediante _reload_event
-    sin esperar el intervalo completo de 10 segundos.
+    Verify that adding a watch to Excel during run_until_complete()
+    wakes patrol wait immediately via _reload_event
+    without waiting for full 10-second interval.
     """
     excel_path = tmp_path / "cartera_wake.xlsx"
     url1 = "https://www.catawiki.com/es/l/950010-watch-one"
@@ -965,7 +965,7 @@ async def test_orchestrator_run_until_complete_live_reload_wakes_patrol(tmp_path
 
     run_task = asyncio.create_task(orchestrator.run_until_complete())
 
-    # Esperar a que haga la primera patrulla del reloj 1
+    # Wait for first patrol of watch 1
     for _ in range(50):
         if url1 in queried_lots:
             break
@@ -973,8 +973,8 @@ async def test_orchestrator_run_until_complete_live_reload_wakes_patrol(tmp_path
     assert url1 in queried_lots
     assert url2 not in queried_lots
 
-    # Ahora el orquestador está en su espera de patrulla de 10s.
-    # Modificamos el Excel añadiendo el reloj 2
+    # Now orchestrator is waiting in 10s patrol wait.
+    # Modify Excel by adding watch 2
     wb = load_workbook(excel_path)
     ws = wb.active
     ws["A8"].value = url2
@@ -982,7 +982,7 @@ async def test_orchestrator_run_until_complete_live_reload_wakes_patrol(tmp_path
     wb.save(excel_path)
     wb.close()
 
-    # Esperamos muy poco tiempo (mucho menor que los 10s de patrol_interval_seconds)
+    # Wait very little time (much less than 10s of patrol_interval_seconds)
     for _ in range(50):
         if url2 in queried_lots:
             break
@@ -996,24 +996,24 @@ async def test_orchestrator_run_until_complete_live_reload_wakes_patrol(tmp_path
 
 
 def test_orchestrator_get_patrol_interval_for_lot_tiers(tmp_path: Path) -> None:
-    """Verifica la asignación de cadencia según tramos de tiempo restante."""
+    """Verify cadence assignment based on remaining time tiers."""
     excel_path = tmp_path / "cartera_tiers.xlsx"
     url = "https://www.catawiki.com/es/l/900001-reloj"
     create_excel_template(excel_path, default_budget_eur=1000, sample_rows=[(url, 200)])
     orchestrator = AuctionOrchestrator(excel_path)
     lot = orchestrator.lots[0]
 
-    # Sin tiempo restante conocido (PENDING / recién creado)
+    # Without known remaining time (PENDING / newly created)
     lot.seconds_remaining = None
     assert orchestrator.get_patrol_interval_for_lot(lot) == 0.0
 
-    # Tramo Lejano (> 3600s / 1h) -> 300s
+    # Far Tier (> 3600s / 1h) -> 300s
     lot.seconds_remaining = 3601.0
     assert orchestrator.get_patrol_interval_for_lot(lot) == 300.0
     lot.seconds_remaining = 86400.0
     assert orchestrator.get_patrol_interval_for_lot(lot) == 300.0
 
-    # Tramo Medio (900s - 3600s) -> 120s
+    # Medium Tier (900s - 3600s) -> 120s
     lot.seconds_remaining = 3600.0
     assert orchestrator.get_patrol_interval_for_lot(lot) == 120.0
     lot.seconds_remaining = 1800.0
@@ -1021,7 +1021,7 @@ def test_orchestrator_get_patrol_interval_for_lot_tiers(tmp_path: Path) -> None:
     lot.seconds_remaining = 901.0
     assert orchestrator.get_patrol_interval_for_lot(lot) == 120.0
 
-    # Tramo Próximo (300s - 900s) -> 60s
+    # Near Tier (300s - 900s) -> 60s
     lot.seconds_remaining = 900.0
     assert orchestrator.get_patrol_interval_for_lot(lot) == 60.0
     lot.seconds_remaining = 500.0
@@ -1029,7 +1029,7 @@ def test_orchestrator_get_patrol_interval_for_lot_tiers(tmp_path: Path) -> None:
     lot.seconds_remaining = 301.0
     assert orchestrator.get_patrol_interval_for_lot(lot) == 60.0
 
-    # En umbral de asalto o inferior (<= 300s) -> 0.0
+    # At assault threshold or lower (<= 300s) -> 0.0
     lot.seconds_remaining = 300.0
     assert orchestrator.get_patrol_interval_for_lot(lot) == 0.0
     lot.seconds_remaining = 25.0
@@ -1038,7 +1038,7 @@ def test_orchestrator_get_patrol_interval_for_lot_tiers(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_orchestrator_patrol_skips_lots_whose_interval_has_not_elapsed(tmp_path: Path) -> None:
-    """Verifica que run_patrol_step solo consulta lotes cuyo intervalo asignado ha vencido."""
+    """Verify that run_patrol_step only queries lots whose assigned interval has elapsed."""
     excel_path = tmp_path / "cartera_skip_patrol.xlsx"
     url_far = "https://www.catawiki.com/es/l/900010-far"
     url_med = "https://www.catawiki.com/es/l/900020-med"
@@ -1087,40 +1087,40 @@ async def test_orchestrator_patrol_skips_lots_whose_interval_has_not_elapsed(tmp
         controller_factory=controller_factory,
     )
 
-    # 1. Primera pasada: como los 3 lotes no tienen _last_patrolled_at, se consultan todos
+    # 1. First pass: since all 3 lots have no _last_patrolled_at, all are queried
     await orchestrator.run_patrol_step()
     assert query_counts[url_far] == 1
     assert query_counts[url_med] == 1
     assert query_counts[url_near] == 1
 
-    # 2. Segunda pasada inmediata: ningún intervalo ha vencido -> ninguno debe consultarse
+    # 2. Immediate second pass: no interval has elapsed -> none should be queried
     await orchestrator.run_patrol_step()
     assert query_counts[url_far] == 1
     assert query_counts[url_med] == 1
     assert query_counts[url_near] == 1
 
-    # 3. Simulamos que han transcurrido 65 segundos solo para url_near (intervalo = 60s)
+    # 3. Simulate 65 seconds elapsed only for url_near (interval = 60s)
     lot_near = orchestrator.lots[2]
     orchestrator._last_patrolled_at[lot_near.lot_id] -= 65.0
 
     await orchestrator.run_patrol_step()
-    # Solo url_near debe haberse consultado nuevamente
+    # Only url_near should have been queried again
     assert query_counts[url_far] == 1
     assert query_counts[url_med] == 1
     assert query_counts[url_near] == 2
 
-    # 4. Simulamos que han transcurrido 125 segundos para url_med (intervalo = 120s)
+    # 4. Simulate 125 seconds elapsed for url_med (interval = 120s)
     lot_med = orchestrator.lots[1]
     orchestrator._last_patrolled_at[lot_med.lot_id] -= 125.0
 
     await orchestrator.run_patrol_step()
     assert query_counts[url_far] == 1
     assert query_counts[url_med] == 2
-    assert query_counts[url_near] == 2  # url_near aún no acumula otros 60s
+    assert query_counts[url_near] == 2  # url_near has not accumulated another 60s yet
 
 
 def test_orchestrator_calculate_patrol_wait_seconds_tiered_and_assault_anticipation(tmp_path: Path) -> None:
-    """Verifica el cálculo de espera con tramos escalonados y anticipación al umbral de 300s."""
+    """Verify wait calculation with tiered intervals and anticipation of the 300s threshold."""
     excel_path = tmp_path / "cartera_wait_tiered.xlsx"
     url_far = "https://www.catawiki.com/es/l/900010-far"
     url_med = "https://www.catawiki.com/es/l/900020-med"
@@ -1134,25 +1134,25 @@ def test_orchestrator_calculate_patrol_wait_seconds_tiered_and_assault_anticipat
     orchestrator = AuctionOrchestrator(excel_path)
     lot_far, lot_med, lot_near = orchestrator.lots
 
-    # Caso 1: Lote nuevo sin seconds_remaining conocido -> espera 0.5s para consulta inmediata
+    # Case 1: New lot without known seconds_remaining -> wait 0.5s for immediate query
     assert orchestrator._calculate_patrol_wait_seconds() == 0.5
 
-    # Caso 2: Solo lotes lejanos (>3600s) -> espera 300s
+    # Case 2: Only far lots (>3600s) -> wait 300s
     lot_far.seconds_remaining = 7200.0
     wait_far_only = orchestrator._calculate_patrol_wait_seconds(pending_lots=[lot_far])
     assert wait_far_only == 300.0
 
-    # Caso 3: Lote medio (1800s) y lejano -> mínimo es 120s
+    # Case 3: Medium lot (1800s) and far lot -> minimum is 120s
     lot_med.seconds_remaining = 1800.0
     wait_med_far = orchestrator._calculate_patrol_wait_seconds(pending_lots=[lot_far, lot_med])
     assert wait_med_far == 120.0
 
-    # Caso 4: Lote próximo (600s) -> mínimo es 60s
+    # Case 4: Near lot (600s) -> minimum is 60s
     lot_near.seconds_remaining = 600.0
     wait_all = orchestrator._calculate_patrol_wait_seconds(pending_lots=[lot_far, lot_med, lot_near])
     assert wait_all == 60.0
 
-    # Caso 5: Anticipación adaptativa a Asalto: lote a 306s (faltan 6s para 300s < 60s)
+    # Case 5: Adaptive anticipation to Assault: lot at 306s (6s left to 300s < 60s)
     lot_near.seconds_remaining = 306.0
     wait_adaptive = orchestrator._calculate_patrol_wait_seconds(pending_lots=[lot_far, lot_med, lot_near])
     assert wait_adaptive == 6.0
