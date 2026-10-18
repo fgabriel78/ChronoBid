@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Protocol
@@ -77,7 +78,9 @@ class AuctionOrchestrator:
         cdp_client: CDPBrowserClient | None = None,
         controller_factory: ControllerFactory | None = None,
         assault_threshold_seconds: float = 300.0,
-        patrol_interval_seconds: float = 15.0,
+        patrol_interval_seconds: float = 60.0,
+        patrol_interval_medium_seconds: float | None = None,
+        patrol_interval_far_seconds: float | None = None,
         assault_tick_seconds: float = 0.25,
         snipe_window_seconds: float = 25.0,
         excel_retry_seconds: float = 2.0,
@@ -89,6 +92,18 @@ class AuctionOrchestrator:
         self._controller_factory = controller_factory or self._default_controller_factory
         self.assault_threshold_seconds = assault_threshold_seconds
         self.patrol_interval_seconds = patrol_interval_seconds
+        if patrol_interval_medium_seconds is not None:
+            self.patrol_interval_medium_seconds = patrol_interval_medium_seconds
+        else:
+            self.patrol_interval_medium_seconds = (
+                120.0 if patrol_interval_seconds == 60.0 else patrol_interval_seconds * 2.0
+            )
+        if patrol_interval_far_seconds is not None:
+            self.patrol_interval_far_seconds = patrol_interval_far_seconds
+        else:
+            self.patrol_interval_far_seconds = (
+                300.0 if patrol_interval_seconds == 60.0 else patrol_interval_seconds * 5.0
+            )
         self.assault_tick_seconds = assault_tick_seconds
         self.excel_poll_interval_seconds = excel_poll_interval_seconds
         self.on_state_change = on_state_change
@@ -104,12 +119,31 @@ class AuctionOrchestrator:
         )
 
         self._assault_tasks: dict[str, asyncio.Task[None]] = {}
+        self._last_patrolled_at: dict[str, float] = {}
         self._stop_event = asyncio.Event()
         self._reload_event = asyncio.Event()
         self._last_excel_mtime = self._get_excel_mtime()
         self._last_input_signature = make_input_signature_from_memory(
             config.global_budget_eur, self.lots
         )
+
+    def get_patrol_interval_for_lot(self, lot: WatchLot) -> float:
+        """
+        Determina el intervalo de consulta escalonado para un lote según su tiempo restante:
+          - > 3600s (> 1 hora): 300s (5 min).
+          - 900s - 3600s (15 a 60 min): 120s (2 min).
+          - 300s - 900s (5 a 15 min): 60s (1 min).
+          - <= 300s o sin tiempo restante conocido (PENDING): 0.0s (consulta inmediata / asalto).
+        """
+        if lot.seconds_remaining is None:
+            return 0.0
+        if lot.seconds_remaining > 3600.0:
+            return self.patrol_interval_far_seconds
+        if lot.seconds_remaining > 900.0:
+            return self.patrol_interval_medium_seconds
+        if lot.seconds_remaining > self.assault_threshold_seconds:
+            return self.patrol_interval_seconds
+        return 0.0
 
     def _get_excel_mtime(self) -> float:
         """Obtiene la fecha de última modificación (mtime) del fichero Excel en disco."""
@@ -197,6 +231,7 @@ class AuctionOrchestrator:
                 logger.info("Tarea de asalto cancelada para lote eliminado: %s", lot.lot_id)
             if lot.status != AuctionStatus.WON:
                 await self.ledger.release(lot.lot_id)
+            self._last_patrolled_at.pop(lot.lot_id, None)
             changed = True
             logger.info("Lote eliminado del seguimiento: %s (%s)", lot.lot_id, lot.url)
 
@@ -213,6 +248,7 @@ class AuctionOrchestrator:
                 lot.max_bid_eur = cfg.max_bid_eur
                 lot.status = AuctionStatus.PENDING
                 lot.notes = ""
+                self._last_patrolled_at.pop(lot.lot_id, None)
                 changed = True
                 self._reload_event.set()
                 logger.info("Lote %s corregido y reactivado a PENDING", lot.lot_id)
@@ -237,6 +273,7 @@ class AuctionOrchestrator:
                             self._spawn_assault_task(lot)
                         else:
                             lot.status = AuctionStatus.PATROL
+                            self._last_patrolled_at.pop(lot.lot_id, None)
                         lot.notes = f"Reactivado tras aumento de puja máxima a {lot.max_bid_eur} €"
                         self._reload_event.set()
                         logger.info(
@@ -268,6 +305,7 @@ class AuctionOrchestrator:
             changed = True
             self._reload_event.set()
             for nlot in new_lots:
+                self._last_patrolled_at.pop(nlot.lot_id, None)
                 logger.info(
                     "Nuevo lote añadido al catálogo: %s (fila %s, max %d €)",
                     nlot.lot_id,
@@ -317,37 +355,70 @@ class AuctionOrchestrator:
 
     def _calculate_patrol_wait_seconds(self, pending_lots: list[WatchLot] | None = None) -> float:
         """
-        Calcula el tiempo de espera hasta la siguiente ronda de patrulla.
-        Si algún lote viable está a punto de entrar en Modo Asalto (< patrol_interval_seconds),
-        ajusta dinámicamente el tiempo para conmutar con precisión al umbral de 300 segundos.
+        Calcula el tiempo de espera hasta la siguiente ronda de patrulla o transición de asalto.
+        Para cada lote activo:
+          - Evalúa su intervalo escalonado según el tiempo restante.
+          - Sincroniza con precisión el salto a Modo Asalto si está a punto de entrar (< assault_threshold_seconds).
+          - Retorna el menor tiempo de espera necesario entre todos los lotes pendientes.
         """
-        wait_seconds = self.patrol_interval_seconds
         lots_to_check = pending_lots if pending_lots is not None else self._get_pending_patrol_lots()
+        if not lots_to_check:
+            return self.patrol_interval_seconds
+
+        now = time.monotonic()
+        candidates: list[float] = []
+
         for lot in lots_to_check:
+            interval = self.get_patrol_interval_for_lot(lot)
+            last_polled = self._last_patrolled_at.get(lot.lot_id)
+
+            if last_polled is None:
+                if lot.seconds_remaining is not None and interval > 0:
+                    time_to_poll = interval
+                else:
+                    time_to_poll = 0.5
+            else:
+                elapsed = now - last_polled
+                time_to_poll = max(0.5, interval - elapsed)
+
+            # Anticipación adaptativa a Modo Asalto (300s)
             if (
                 lot.is_viable
                 and lot.seconds_remaining is not None
                 and lot.seconds_remaining > self.assault_threshold_seconds
             ):
                 time_to_assault = lot.seconds_remaining - self.assault_threshold_seconds
-                if 0 < time_to_assault < wait_seconds:
-                    wait_seconds = max(0.5, time_to_assault)
-        return wait_seconds
+                if 0 < time_to_assault < time_to_poll:
+                    time_to_poll = max(0.5, time_to_assault)
 
-    async def run_patrol_step(self) -> None:
+            candidates.append(time_to_poll)
+
+        return min(candidates) if candidates else self.patrol_interval_seconds
+
+    async def run_patrol_step(self, *, force: bool = False) -> None:
         """
         Ejecuta una pasada de Modo Patrulla sobre los lotes activos que aún no están
         en Modo Asalto dedicado, y lanza tareas de Asalto para los que entren en <= 5 min.
+        Filtra y consulta únicamente los lotes cuyo intervalo asignado haya vencido o
+        que no tengan consulta previa registrada (salvo si force=True).
         """
+        now = time.monotonic()
         for lot in self.lots:
             if not lot.status.is_active or lot.is_closed:
                 continue
             if lot.lot_id in self._assault_tasks and not self._assault_tasks[lot.lot_id].done():
                 continue
 
+            interval = self.get_patrol_interval_for_lot(lot)
+            last_polled = self._last_patrolled_at.get(lot.lot_id)
+            if not force and last_polled is not None and lot.seconds_remaining is not None:
+                if (now - last_polled) < interval:
+                    continue
+
             try:
                 controller = await self._controller_factory(lot)
             except Exception as exc:
+                self._last_patrolled_at[lot.lot_id] = time.monotonic()
                 logger.warning("Fallo al conectar controlador para lote %s: %s", lot.lot_id, exc)
                 lot.notes = f"Error puntual de conexión en Catawiki: {exc}"
                 self._emit_and_enqueue()
@@ -377,6 +448,7 @@ class AuctionOrchestrator:
                     self._emit_and_enqueue()
                     continue
             finally:
+                self._last_patrolled_at[lot.lot_id] = time.monotonic()
                 await controller.close()
 
             # Reconciliar estado del lote (cierre, liderazgo o superación) en BudgetLedger

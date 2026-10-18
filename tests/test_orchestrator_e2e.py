@@ -384,7 +384,7 @@ async def test_orchestrator_patrol_syncs_and_releases_leader_commitment_in_ledge
     wb.close()
 
     # Ronda 2: otro postor supera la puja en patrulla -> debe liberar el 1 € al instante
-    await orchestrator.run_patrol_step()
+    await orchestrator.run_patrol_step(force=True)
     await orchestrator.sync_worker.flush_once()
 
     assert lot.status == AuctionStatus.OUTBID
@@ -993,5 +993,169 @@ async def test_orchestrator_run_until_complete_live_reload_wakes_patrol(tmp_path
 
     assert url2 in queried_lots
     assert len(orchestrator.lots) == 2
+
+
+def test_orchestrator_get_patrol_interval_for_lot_tiers(tmp_path: Path) -> None:
+    """Verifica la asignación de cadencia según tramos de tiempo restante."""
+    excel_path = tmp_path / "cartera_tiers.xlsx"
+    url = "https://www.catawiki.com/es/l/900001-reloj"
+    create_excel_template(excel_path, default_budget_eur=1000, sample_rows=[(url, 200)])
+    orchestrator = AuctionOrchestrator(excel_path)
+    lot = orchestrator.lots[0]
+
+    # Sin tiempo restante conocido (PENDING / recién creado)
+    lot.seconds_remaining = None
+    assert orchestrator.get_patrol_interval_for_lot(lot) == 0.0
+
+    # Tramo Lejano (> 3600s / 1h) -> 300s
+    lot.seconds_remaining = 3601.0
+    assert orchestrator.get_patrol_interval_for_lot(lot) == 300.0
+    lot.seconds_remaining = 86400.0
+    assert orchestrator.get_patrol_interval_for_lot(lot) == 300.0
+
+    # Tramo Medio (900s - 3600s) -> 120s
+    lot.seconds_remaining = 3600.0
+    assert orchestrator.get_patrol_interval_for_lot(lot) == 120.0
+    lot.seconds_remaining = 1800.0
+    assert orchestrator.get_patrol_interval_for_lot(lot) == 120.0
+    lot.seconds_remaining = 901.0
+    assert orchestrator.get_patrol_interval_for_lot(lot) == 120.0
+
+    # Tramo Próximo (300s - 900s) -> 60s
+    lot.seconds_remaining = 900.0
+    assert orchestrator.get_patrol_interval_for_lot(lot) == 60.0
+    lot.seconds_remaining = 500.0
+    assert orchestrator.get_patrol_interval_for_lot(lot) == 60.0
+    lot.seconds_remaining = 301.0
+    assert orchestrator.get_patrol_interval_for_lot(lot) == 60.0
+
+    # En umbral de asalto o inferior (<= 300s) -> 0.0
+    lot.seconds_remaining = 300.0
+    assert orchestrator.get_patrol_interval_for_lot(lot) == 0.0
+    lot.seconds_remaining = 25.0
+    assert orchestrator.get_patrol_interval_for_lot(lot) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_patrol_skips_lots_whose_interval_has_not_elapsed(tmp_path: Path) -> None:
+    """Verifica que run_patrol_step solo consulta lotes cuyo intervalo asignado ha vencido."""
+    excel_path = tmp_path / "cartera_skip_patrol.xlsx"
+    url_far = "https://www.catawiki.com/es/l/900010-far"
+    url_med = "https://www.catawiki.com/es/l/900020-med"
+    url_near = "https://www.catawiki.com/es/l/900030-near"
+    create_excel_template(
+        excel_path,
+        default_budget_eur=1500,
+        sample_rows=[(url_far, 200), (url_med, 200), (url_near, 200)],
+    )
+
+    query_counts: dict[str, int] = {url_far: 0, url_med: 0, url_near: 0}
+
+    class MockPatrolController:
+        def __init__(self, target_url: str) -> None:
+            self.target_url = target_url
+
+        async def extract_snapshot(self) -> LotPageSnapshot:
+            query_counts[self.target_url] += 1
+            if "far" in self.target_url:
+                sec = 7200.0  # > 3600s -> intervalo 300s
+            elif "med" in self.target_url:
+                sec = 1800.0  # 900-3600s -> intervalo 120s
+            else:
+                sec = 600.0   # 300-900s -> intervalo 60s
+            return LotPageSnapshot(
+                title="Mock Watch",
+                current_bid_eur=50,
+                next_min_bid_eur=55,
+                seconds_remaining=sec,
+                is_leader=False,
+                reserve_status=ReserveStatus.NO_RESERVE,
+                is_closed=False,
+            )
+
+        async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
+            raise NotImplementedError
+
+        async def close(self) -> None:
+            pass
+
+    async def controller_factory(lot: WatchLot) -> MockPatrolController:
+        return MockPatrolController(lot.url)
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        controller_factory=controller_factory,
+    )
+
+    # 1. Primera pasada: como los 3 lotes no tienen _last_patrolled_at, se consultan todos
+    await orchestrator.run_patrol_step()
+    assert query_counts[url_far] == 1
+    assert query_counts[url_med] == 1
+    assert query_counts[url_near] == 1
+
+    # 2. Segunda pasada inmediata: ningún intervalo ha vencido -> ninguno debe consultarse
+    await orchestrator.run_patrol_step()
+    assert query_counts[url_far] == 1
+    assert query_counts[url_med] == 1
+    assert query_counts[url_near] == 1
+
+    # 3. Simulamos que han transcurrido 65 segundos solo para url_near (intervalo = 60s)
+    lot_near = orchestrator.lots[2]
+    orchestrator._last_patrolled_at[lot_near.lot_id] -= 65.0
+
+    await orchestrator.run_patrol_step()
+    # Solo url_near debe haberse consultado nuevamente
+    assert query_counts[url_far] == 1
+    assert query_counts[url_med] == 1
+    assert query_counts[url_near] == 2
+
+    # 4. Simulamos que han transcurrido 125 segundos para url_med (intervalo = 120s)
+    lot_med = orchestrator.lots[1]
+    orchestrator._last_patrolled_at[lot_med.lot_id] -= 125.0
+
+    await orchestrator.run_patrol_step()
+    assert query_counts[url_far] == 1
+    assert query_counts[url_med] == 2
+    assert query_counts[url_near] == 2  # url_near aún no acumula otros 60s
+
+
+def test_orchestrator_calculate_patrol_wait_seconds_tiered_and_assault_anticipation(tmp_path: Path) -> None:
+    """Verifica el cálculo de espera con tramos escalonados y anticipación al umbral de 300s."""
+    excel_path = tmp_path / "cartera_wait_tiered.xlsx"
+    url_far = "https://www.catawiki.com/es/l/900010-far"
+    url_med = "https://www.catawiki.com/es/l/900020-med"
+    url_near = "https://www.catawiki.com/es/l/900030-near"
+    create_excel_template(
+        excel_path,
+        default_budget_eur=1500,
+        sample_rows=[(url_far, 200), (url_med, 200), (url_near, 200)],
+    )
+
+    orchestrator = AuctionOrchestrator(excel_path)
+    lot_far, lot_med, lot_near = orchestrator.lots
+
+    # Caso 1: Lote nuevo sin seconds_remaining conocido -> espera 0.5s para consulta inmediata
+    assert orchestrator._calculate_patrol_wait_seconds() == 0.5
+
+    # Caso 2: Solo lotes lejanos (>3600s) -> espera 300s
+    lot_far.seconds_remaining = 7200.0
+    wait_far_only = orchestrator._calculate_patrol_wait_seconds(pending_lots=[lot_far])
+    assert wait_far_only == 300.0
+
+    # Caso 3: Lote medio (1800s) y lejano -> mínimo es 120s
+    lot_med.seconds_remaining = 1800.0
+    wait_med_far = orchestrator._calculate_patrol_wait_seconds(pending_lots=[lot_far, lot_med])
+    assert wait_med_far == 120.0
+
+    # Caso 4: Lote próximo (600s) -> mínimo es 60s
+    lot_near.seconds_remaining = 600.0
+    wait_all = orchestrator._calculate_patrol_wait_seconds(pending_lots=[lot_far, lot_med, lot_near])
+    assert wait_all == 60.0
+
+    # Caso 5: Anticipación adaptativa a Asalto: lote a 306s (faltan 6s para 300s < 60s)
+    lot_near.seconds_remaining = 306.0
+    wait_adaptive = orchestrator._calculate_patrol_wait_seconds(pending_lots=[lot_far, lot_med, lot_near])
+    assert wait_adaptive == 6.0
+
 
 
