@@ -78,6 +78,16 @@ class CatawikiSelectors:
         '[role="dialog"] button:has-text("Cancelar")',
         '[role="dialog"] button:has-text("Cancel")',
     )
+    press_and_hold_selectors: tuple[str, ...] = (
+        "#px-captcha iframe",
+        "#px-captcha",
+        '[id*="px-captcha"]',
+        'button:has-text("Press & Hold")',
+        '[role="button"]:has-text("Press & Hold")',
+        'button:has-text("Mantén pulsado")',
+        '[role="button"]:has-text("Mantén pulsado")',
+        'div:has-text("Press & Hold to confirm")',
+    )
     leader_phrases: tuple[str, ...] = (
         "eres el máximo pujador",
         "tu puja es la más alta",
@@ -408,12 +418,18 @@ class CatawikiLotPage:
         confirmation_wait_seconds: float = 0.45,
         confirm_appear_timeout_seconds: float = 2.5,
         confirm_poll_interval_seconds: float = 0.05,
+        press_and_hold_max_seconds: float = 8.0,
+        press_and_hold_poll_seconds: float = 0.1,
+        post_challenge_wait_seconds: float = 0.8,
     ) -> None:
         self.page = page
         self.selectors = selectors or CatawikiSelectors()
         self.confirmation_wait_seconds = confirmation_wait_seconds
         self.confirm_appear_timeout_seconds = confirm_appear_timeout_seconds
         self.confirm_poll_interval_seconds = confirm_poll_interval_seconds
+        self.press_and_hold_max_seconds = press_and_hold_max_seconds
+        self.press_and_hold_poll_seconds = press_and_hold_poll_seconds
+        self.post_challenge_wait_seconds = post_challenge_wait_seconds
         self._last_network_snapshot: LotPageSnapshot | None = None
         self._listener_attached = False
 
@@ -680,6 +696,97 @@ class CatawikiLotPage:
             raw_source=raw_source,
         )
 
+    async def _find_press_and_hold_target(self) -> tuple[Any, str] | None:
+        """
+        Searches across the main page DOM and any child frames for a visible
+        'Press & Hold' human verification element.
+        """
+        contexts: list[Any] = [self.page]
+        frames = getattr(self.page, "frames", None)
+        if frames:
+            for frame in frames:
+                if frame is not None and frame is not self.page:
+                    contexts.append(frame)
+
+        for sel in self.selectors.press_and_hold_selectors:
+            for ctx in contexts:
+                if not hasattr(ctx, "locator"):
+                    continue
+                try:
+                    loc = ctx.locator(sel)
+                    if await loc.count() > 0:
+                        first = loc.first
+                        if hasattr(first, "is_visible"):
+                            if not await first.is_visible():
+                                continue
+                        return first, sel
+                except Exception:
+                    continue
+        return None
+
+    async def _solve_press_and_hold(self) -> bool:
+        """
+        Detects a 'Press & Hold' verification modal and holds the mouse button down
+        on its target bounding box until the modal disappears or timeout expires.
+        Returns True if a challenge was detected and handled, False otherwise.
+        """
+        found = await self._find_press_and_hold_target()
+        if found is None:
+            return False
+
+        target_el, matched_sel = found
+        box: dict[str, float] | None = None
+        if hasattr(target_el, "bounding_box"):
+            try:
+                box = await target_el.bounding_box()
+            except Exception:
+                box = None
+
+        poll = max(0.01, self.press_and_hold_poll_seconds)
+        max_hold = max(0.0, self.press_and_hold_max_seconds)
+        mouse = getattr(self.page, "mouse", None)
+
+        if (
+            isinstance(box, dict)
+            and float(box.get("width", 0.0)) > 0
+            and float(box.get("height", 0.0)) > 0
+            and mouse is not None
+        ):
+            width = float(box["width"])
+            height = float(box["height"])
+            y_ratio = 0.62 if "Press & Hold to confirm" in matched_sel else 0.5
+            offset_x = min(3.0, width * 0.04)
+            offset_y = min(2.0, height * 0.04)
+            target_x = float(box["x"]) + width * 0.5 + offset_x
+            target_y = float(box["y"]) + height * y_ratio + offset_y
+
+            await mouse.move(target_x, target_y, steps=8)
+            await mouse.down()
+            try:
+                held = 0.0
+                while held < max_hold:
+                    await asyncio.sleep(poll)
+                    held += poll
+                    if await self._find_press_and_hold_target() is None:
+                        break
+            finally:
+                await mouse.up()
+            return True
+
+        # Fallback for simplified test doubles without bounding_box or page.mouse
+        if hasattr(target_el, "click"):
+            try:
+                await target_el.click()
+            except Exception:
+                pass
+        held = 0.0
+        while held < max_hold:
+            if await self._find_press_and_hold_target() is None:
+                break
+            await asyncio.sleep(poll)
+            held += poll
+        return True
+
     async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
         """
         Executes a bid for the exact amount `bid_amount_eur` in Catawiki interface,
@@ -689,7 +796,8 @@ class CatawikiLotPage:
         if bid_amount_eur <= 0:
             raise ValueError("El importe de puja debe ser mayor que 0 EUR.")
 
-        # 0. If a previous hanging confirmation modal exists, close it before starting
+        # 0. Resolve any pre-existing Press & Hold challenge and close any hanging confirmation modal
+        await self._solve_press_and_hold()
         for cancel_sel in self.selectors.bid_cancel_selectors:
             try:
                 cancel_loc = self.page.locator(cancel_sel)
@@ -742,8 +850,9 @@ class CatawikiLotPage:
             if not submitted:
                 raise RuntimeError("No se encontró el botón de envío de puja en la página de Catawiki.")
 
-        # 3. Actively wait for confirmation modal dialog to appear and click confirm
+        # 3. Actively wait for confirmation modal dialog (or Press & Hold challenge) to appear
         confirmed = False
+        challenge_solved = False
         elapsed = 0.0
         timeout = max(0.0, self.confirm_appear_timeout_seconds)
         poll = max(0.01, self.confirm_poll_interval_seconds)
@@ -758,12 +867,32 @@ class CatawikiLotPage:
                         break
                 except Exception:
                     continue
-            if confirmed or elapsed >= timeout:
+            if confirmed:
+                break
+            if await self._solve_press_and_hold():
+                challenge_solved = True
+                elapsed = 0.0
+                timeout = min(timeout, max(poll * 2, self.post_challenge_wait_seconds))
+            if elapsed >= timeout:
                 break
             await asyncio.sleep(poll)
             elapsed += poll
 
-        if self.confirmation_wait_seconds > 0:
-            await asyncio.sleep(self.confirmation_wait_seconds)
+        # 4. Post-confirmation window: check if confirming triggered a Press & Hold challenge
+        if await self._solve_press_and_hold():
+            challenge_solved = True
+        elif self.confirmation_wait_seconds > 0:
+            wait_rem = self.confirmation_wait_seconds
+            while wait_rem > 0:
+                step = min(poll, wait_rem)
+                await asyncio.sleep(step)
+                wait_rem -= step
+                if await self._solve_press_and_hold():
+                    challenge_solved = True
+                    break
+
+        if challenge_solved and self.post_challenge_wait_seconds > 0:
+            await asyncio.sleep(self.post_challenge_wait_seconds)
 
         return await self.extract_snapshot()
+

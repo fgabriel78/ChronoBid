@@ -7,6 +7,7 @@ import pytest
 from chronobid.browser.catawiki_page import (
     CatawikiLotPage,
     CatawikiPageLoadError,
+    CatawikiSelectors,
     compute_catawiki_next_min_bid,
     parse_countdown_seconds,
     parse_euro_amount,
@@ -772,6 +773,318 @@ async def test_submit_minimum_bid_waits_for_async_lot_bid_confirmation_modal_and
     assert snap2.is_leader is True
     assert snap2.current_bid_eur == 5
     assert snap2.next_min_bid_eur == 6
+
+
+def test_catawiki_selectors_press_and_hold_patterns() -> None:
+    selectors = CatawikiSelectors()
+    assert "#px-captcha iframe" in selectors.press_and_hold_selectors
+    assert "#px-captcha" in selectors.press_and_hold_selectors
+    assert '[id*="px-captcha"]' in selectors.press_and_hold_selectors
+    assert 'button:has-text("Press & Hold")' in selectors.press_and_hold_selectors
+    assert '[role="button"]:has-text("Press & Hold")' in selectors.press_and_hold_selectors
+    assert 'button:has-text("Mantén pulsado")' in selectors.press_and_hold_selectors
+    assert '[role="button"]:has-text("Mantén pulsado")' in selectors.press_and_hold_selectors
+
+
+async def test_solve_press_and_hold_across_frames_with_mouse_and_bounding_box() -> None:
+    events: list[tuple[str, Any]] = []
+    polls_until_dismiss = 3
+
+    class SimulatedHoldTarget:
+        async def is_visible(self) -> bool:
+            return True
+
+        async def bounding_box(self) -> dict[str, float]:
+            return {"x": 400.0, "y": 300.0, "width": 200.0, "height": 50.0}
+
+    class SimulatedChildFrame:
+        def locator(self, selector: str) -> SimulatedLocator:
+            nonlocal polls_until_dismiss
+            if selector == 'button:has-text("Press & Hold")':
+                if polls_until_dismiss > 0:
+                    polls_until_dismiss -= 1
+                    return SimulatedLocator([SimulatedHoldTarget()])  # type: ignore[list-item]
+            return SimulatedLocator([])
+
+    class SimulatedMouse:
+        async def move(self, x: float, y: float, *, steps: int = 1) -> None:
+            events.append(("move", (round(x, 1), round(y, 1), steps)))
+
+        async def down(self) -> None:
+            events.append(("down", None))
+
+        async def up(self) -> None:
+            events.append(("up", None))
+
+    class SimulatedPageWithFrames:
+        def __init__(self) -> None:
+            self.frames = [SimulatedChildFrame()]
+            self.mouse = SimulatedMouse()
+
+        def locator(self, selector: str) -> SimulatedLocator:
+            return SimulatedLocator([])
+
+    page = SimulatedPageWithFrames()
+    lot_page = CatawikiLotPage(
+        page,
+        press_and_hold_max_seconds=0.5,
+        press_and_hold_poll_seconds=0.01,
+    )
+
+    solved = await lot_page._solve_press_and_hold()
+    assert solved is True
+    assert [e[0] for e in events] == ["move", "down", "up"]
+    move_coords = events[0][1]
+    assert 500.0 <= move_coords[0] <= 505.0
+    assert 325.0 <= move_coords[1] <= 328.0
+    assert move_coords[2] == 8
+
+
+async def test_solve_press_and_hold_guarantees_mouse_up_on_error() -> None:
+    events: list[str] = []
+    call_count = 0
+
+    class SimulatedHoldTarget:
+        async def bounding_box(self) -> dict[str, float]:
+            return {"x": 100.0, "y": 100.0, "width": 120.0, "height": 40.0}
+
+    class SimulatedMouse:
+        async def move(self, x: float, y: float, *, steps: int = 1) -> None:
+            events.append("move")
+
+        async def down(self) -> None:
+            events.append("down")
+
+        async def up(self) -> None:
+            events.append("up")
+
+    class SimulatedPage:
+        def __init__(self) -> None:
+            self.mouse = SimulatedMouse()
+
+        def locator(self, selector: str) -> SimulatedLocator:
+            nonlocal call_count
+            if selector == "#px-captcha":
+                call_count += 1
+                if call_count == 1:
+                    return SimulatedLocator([SimulatedHoldTarget()])  # type: ignore[list-item]
+                return SimulatedLocator([])
+            return SimulatedLocator([])
+
+    lot_page = CatawikiLotPage(
+        SimulatedPage(),
+        press_and_hold_max_seconds=0.05,
+        press_and_hold_poll_seconds=0.01,
+    )
+    assert await lot_page._solve_press_and_hold() is True
+    assert events == ["move", "down", "up"]
+
+
+async def test_submit_minimum_bid_resolves_press_and_hold_after_confirm() -> None:
+    """
+    Simulates Catawiki intercepting the bid after clicking 'Confirmar puja' with a
+    'Press & Hold' modal (#px-captcha). Only after continuous mouse hold completes
+    does the modal close and Catawiki automatically register the bid.
+    """
+
+    class SimulatedHoldElement:
+        async def is_visible(self) -> bool:
+            return True
+
+        async def bounding_box(self) -> dict[str, float]:
+            return {"x": 350.0, "y": 280.0, "width": 220.0, "height": 54.0}
+
+    class SimulatedPressAndHoldLotPage:
+        def __init__(self) -> None:
+            self.title = "Seiko Chronograph SND195P"
+            self.current_bid = 120
+            self.next_min_bid = 130
+            self.is_leader = False
+            self.pending_bid: int | None = None
+            self.confirm_visible = False
+            self.challenge_active = False
+            self.hold_polls_needed = 3
+            self.mouse_down = False
+            self.mouse_events: list[str] = []
+            self.mouse = self
+
+        async def move(self, x: float, y: float, *, steps: int = 1) -> None:
+            self.mouse_events.append(f"move:{steps}")
+
+        async def down(self) -> None:
+            self.mouse_down = True
+            self.mouse_events.append("down")
+
+        async def up(self) -> None:
+            self.mouse_down = False
+            self.mouse_events.append("up")
+
+        def _on_quick_bid_click(self, amount: int) -> None:
+            self.pending_bid = amount
+            self.confirm_visible = True
+
+        def _on_confirm_click(self) -> None:
+            self.confirm_visible = False
+            # Instead of applying bid immediately, PerimeterX challenge mounts
+            self.challenge_active = True
+
+        def locator(self, selector: str) -> SimulatedLocator:
+            if selector == "#px-captcha":
+                if self.challenge_active:
+                    if self.mouse_down:
+                        self.hold_polls_needed -= 1
+                        if self.hold_polls_needed <= 0:
+                            self.challenge_active = False
+                            # Bid registers automatically once challenge closes
+                            if self.pending_bid is not None:
+                                self.current_bid = self.pending_bid
+                                self.next_min_bid = self.pending_bid + 10
+                                self.is_leader = True
+                            return SimulatedLocator([])
+                    return SimulatedLocator([SimulatedHoldElement()])  # type: ignore[list-item]
+                return SimulatedLocator([])
+            if selector == '[data-testid="lot-title"]':
+                return SimulatedLocator([SimulatedElement(text=self.title)])
+            if selector == '[data-testid="current-bid-amount"]':
+                return SimulatedLocator([SimulatedElement(text=f"€ {self.current_bid}")])
+            if selector == '[data-testid="next-minimum-bid"]':
+                return SimulatedLocator([SimulatedElement(text=f"{self.next_min_bid} €")])
+            if selector == '[data-testid="lot-bidding-counter"]':
+                return SimulatedLocator([SimulatedElement(text="00:16")])
+            if selector == '[data-testid="quick-bid-buttons"] button':
+                return SimulatedLocator(
+                    [
+                        SimulatedElement(
+                            text=f"€ {self.next_min_bid}",
+                            on_click=lambda: self._on_quick_bid_click(self.next_min_bid),
+                        )
+                    ]
+                )
+            if selector == 'button[data-testid="confirm-bid-button"]':
+                if self.confirm_visible:
+                    return SimulatedLocator(
+                        [
+                            SimulatedElement(
+                                text="Confirmar puja",
+                                on_click=self._on_confirm_click,
+                            )
+                        ]
+                    )
+                return SimulatedLocator([])
+            if selector == "body":
+                status_txt = "Eres el máximo pujador" if self.is_leader else "Sin precio de reserva"
+                return SimulatedLocator([SimulatedElement(text=f"{self.title} | {status_txt}")])
+            return SimulatedLocator([])
+
+    sim = SimulatedPressAndHoldLotPage()
+    lot_page = CatawikiLotPage(
+        sim,
+        confirmation_wait_seconds=0.05,
+        confirm_appear_timeout_seconds=0.2,
+        confirm_poll_interval_seconds=0.01,
+        press_and_hold_max_seconds=0.5,
+        press_and_hold_poll_seconds=0.01,
+        post_challenge_wait_seconds=0.01,
+    )
+
+    snap = await lot_page.submit_minimum_bid(130)
+    assert sim.challenge_active is False
+    assert sim.mouse_down is False
+    assert sim.mouse_events == ["move:8", "down", "up"]
+    assert snap.is_leader is True
+    assert snap.current_bid_eur == 130
+    assert snap.next_min_bid_eur == 140
+
+
+async def test_submit_minimum_bid_resolves_press_and_hold_before_confirm() -> None:
+    """
+    Simulates a 'Press & Hold' modal appearing immediately after clicking 'Pujar',
+    before the confirmation modal or automatic bid completion.
+    """
+
+    class SimulatedHoldElement:
+        async def bounding_box(self) -> dict[str, float]:
+            return {"x": 300.0, "y": 250.0, "width": 200.0, "height": 50.0}
+
+    class SimulatedPreConfirmChallengePage:
+        def __init__(self) -> None:
+            self.title = "Tissot PRX Powermatic 80"
+            self.current_bid = 200
+            self.next_min_bid = 220
+            self.is_leader = False
+            self.challenge_active = False
+            self.hold_polls_needed = 2
+            self.mouse_down = False
+            self.mouse_events: list[str] = []
+            self.mouse = self
+
+        async def move(self, x: float, y: float, *, steps: int = 1) -> None:
+            self.mouse_events.append("move")
+
+        async def down(self) -> None:
+            self.mouse_down = True
+            self.mouse_events.append("down")
+
+        async def up(self) -> None:
+            self.mouse_down = False
+            self.mouse_events.append("up")
+
+        def _on_quick_click(self) -> None:
+            self.challenge_active = True
+
+        def locator(self, selector: str) -> SimulatedLocator:
+            if selector == 'button:has-text("Press & Hold")':
+                if self.challenge_active:
+                    if self.mouse_down:
+                        self.hold_polls_needed -= 1
+                        if self.hold_polls_needed <= 0:
+                            self.challenge_active = False
+                            self.current_bid = 220
+                            self.next_min_bid = 240
+                            self.is_leader = True
+                            return SimulatedLocator([])
+                    return SimulatedLocator([SimulatedHoldElement()])  # type: ignore[list-item]
+                return SimulatedLocator([])
+            if selector == '[data-testid="lot-title"]':
+                return SimulatedLocator([SimulatedElement(text=self.title)])
+            if selector == '[data-testid="current-bid-amount"]':
+                return SimulatedLocator([SimulatedElement(text=f"€ {self.current_bid}")])
+            if selector == '[data-testid="next-minimum-bid"]':
+                return SimulatedLocator([SimulatedElement(text=f"{self.next_min_bid} €")])
+            if selector == '[data-testid="lot-bidding-counter"]':
+                return SimulatedLocator([SimulatedElement(text="00:12")])
+            if selector == '[data-testid="quick-bid-buttons"] button':
+                return SimulatedLocator(
+                    [
+                        SimulatedElement(
+                            text=f"€ {self.next_min_bid}",
+                            on_click=self._on_quick_click,
+                        )
+                    ]
+                )
+            if selector == "body":
+                status_txt = "Eres el máximo pujador" if self.is_leader else "Sin precio de reserva"
+                return SimulatedLocator([SimulatedElement(text=f"{self.title} | {status_txt}")])
+            return SimulatedLocator([])
+
+    sim = SimulatedPreConfirmChallengePage()
+    lot_page = CatawikiLotPage(
+        sim,
+        confirmation_wait_seconds=0.01,
+        confirm_appear_timeout_seconds=0.2,
+        confirm_poll_interval_seconds=0.01,
+        press_and_hold_max_seconds=0.5,
+        press_and_hold_poll_seconds=0.01,
+        post_challenge_wait_seconds=0.01,
+    )
+
+    snap = await lot_page.submit_minimum_bid(220)
+    assert sim.challenge_active is False
+    assert sim.mouse_events == ["move", "down", "up"]
+    assert snap.is_leader is True
+    assert snap.current_bid_eur == 220
+    assert snap.next_min_bid_eur == 240
+
 
 
 
