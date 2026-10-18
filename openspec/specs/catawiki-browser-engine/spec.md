@@ -18,7 +18,7 @@ The system SHALL connect to an existing browser instance already opened and auth
 - **THEN** the system clearly notifies the connection/authentication requirement and halts bid submission until restored
 
 ### Requirement: Differentiated operation in Patrol Mode and Assault Mode
-The system SHALL monitor watches with far closing times (> 5 minutes) using an adaptive tiered cadence based on each individual lot's remaining time (Patrol Mode) and switch to continuous real-time tracking (Assault Mode) when less than 5 minutes remain before closing for a viable watch, ensuring strict cadence independence and resource usage minimization.
+The system SHALL monitor watches with far closing times (> 5 minutes) using an adaptive tiered cadence based on each individual lot's remaining time (Patrol Mode) and switch to continuous real-time tracking (Assault Mode) when less than 5 minutes remain before closing for a viable watch, ensuring strict cadence independence, live Excel reload responsiveness between sequential patrol queries, and resource usage minimization.
 
 #### Scenario: Transition from Patrol Mode to Assault Mode
 - **WHEN** a viable watch enters the last 5 minutes prior to its closing time
@@ -26,11 +26,11 @@ The system SHALL monitor watches with far closing times (> 5 minutes) using an a
 
 #### Scenario: Tiered cadence by time windows in Patrol Mode
 - **WHEN** an active lot in Patrol Mode has a known remaining time greater than 5 minutes
-- **THEN** the system applies an individualized review cadence: every 300 seconds if more than 3,600 seconds remain (> 1 hour), every 120 seconds if between 900 and 3,600 seconds remain (15 to 60 minutes), and every 60 seconds if between 300 and 900 seconds remain (5 to 15 minutes), avoiding lot inspection until its corresponding interval has elapsed
+- **THEN** the system applies an individualized review cadence: every 300 seconds if more than 3,600 seconds remain (> 1 hour), every 120 seconds if between 900 and 3,600 seconds remain (15 to 60 minutes), and every 60 seconds if between 300 and 900 seconds remain (5 to 15 minutes), evaluating elapsed time against the current monotonic clock per lot and avoiding lot inspection until its corresponding interval has elapsed
 
 #### Scenario: Immediate priority for pending lots without prior query
-- **WHEN** a new lot is added to the catalog or a lot remains in PENDING status without a prior snapshot
-- **THEN** the system prioritizes and immediately includes it in the next patrol round without waiting for any prior time interval
+- **WHEN** a new lot is added to the catalog or a lot remains in PENDING status without a prior snapshot, including when added to Excel while a patrol round is already in progress
+- **THEN** the system detects the Excel modification between sequential patrol queries and immediately inspects the new pending lot without waiting for the current patrol round or a full patrol interval to finish
 
 #### Scenario: Adaptive anticipation of Assault Mode threshold
 - **WHEN** a viable watch in the upcoming window (5 to 15 minutes) has remaining time such that the next periodic poll would fall below 300 seconds

@@ -1158,4 +1158,134 @@ def test_orchestrator_calculate_patrol_wait_seconds_tiered_and_assault_anticipat
     assert wait_adaptive == 6.0
 
 
+@pytest.mark.asyncio
+async def test_orchestrator_mid_patrol_excel_live_reload_inspects_new_lot_immediately(
+    tmp_path: Path,
+) -> None:
+    """
+    Verify that if a user adds a new watch row to Excel while run_patrol_step()
+    is actively inspecting existing lots, the orchestrator detects the change
+    between lots and patrols the newly added watch in the same patrol pass.
+    """
+    excel_path = tmp_path / "cartera_mid_patrol.xlsx"
+    url1 = "https://www.catawiki.com/es/l/960001-seiko-one"
+    url2 = "https://www.catawiki.com/es/l/960002-seiko-two"
+    url3 = "https://www.catawiki.com/es/l/960003-seiko-three-added-mid-patrol"
+    create_excel_template(
+        excel_path,
+        default_budget_eur=2000,
+        sample_rows=[(url1, 400), (url2, 400)],
+    )
 
+    inspected_urls: list[str] = []
+
+    class MidPatrolController:
+        def __init__(self, target_url: str) -> None:
+            self.target_url = target_url
+
+        async def extract_snapshot(self) -> LotPageSnapshot:
+            inspected_urls.append(self.target_url)
+            if self.target_url == url1:
+                # Simulate user saving a new row (row 9) in Excel while lot 1 is being inspected
+                wb = load_workbook(excel_path)
+                ws = wb.active
+                assert ws is not None
+                ws["A9"].value = url3
+                ws["B9"].value = 350
+                wb.save(excel_path)
+                wb.close()
+            return LotPageSnapshot(
+                title=f"Title for {self.target_url}",
+                current_bid_eur=100,
+                next_min_bid_eur=110,
+                seconds_remaining=7200.0,
+                is_leader=False,
+                reserve_status=ReserveStatus.NO_RESERVE,
+                is_closed=False,
+            )
+
+        async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
+            raise NotImplementedError
+
+        async def close(self) -> None:
+            pass
+
+    async def controller_factory(lot: WatchLot) -> MidPatrolController:
+        return MidPatrolController(lot.url)
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        controller_factory=controller_factory,
+    )
+
+    await orchestrator.run_patrol_step()
+
+    assert inspected_urls == [url1, url2, url3]
+    assert len(orchestrator.lots) == 3
+    assert orchestrator.lots[2].url == url3
+    assert orchestrator.lots[2].status == AuctionStatus.PATROL
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_duplicate_lot_id_rows_patrolled_independently(
+    tmp_path: Path,
+) -> None:
+    """
+    Verify that two Excel rows pointing to the same Catawiki lot ID (e.g. with
+    different search query parameters or identical URLs) receive distinct lot_ids,
+    preserve 1-to-1 signature parity, and do not starve each other in patrol rounds.
+    """
+    excel_path = tmp_path / "cartera_dup_lot_id.xlsx"
+    url_a = "https://www.catawiki.com/es/l/107625784-seiko-chrono?po=search&poq=reloj+seiko"
+    url_b = "https://www.catawiki.com/es/l/107625784-seiko-chrono?po=search&poq=seiko"
+    create_excel_template(
+        excel_path,
+        default_budget_eur=1500,
+        sample_rows=[(url_a, 450), (url_b, 290)],
+    )
+
+    inspected_rows: list[int | None] = []
+
+    class DupLotController:
+        def __init__(self, lot: WatchLot) -> None:
+            self.lot = lot
+
+        async def extract_snapshot(self) -> LotPageSnapshot:
+            inspected_rows.append(self.lot.row_index)
+            return LotPageSnapshot(
+                title="Seiko Chronograph",
+                current_bid_eur=200,
+                next_min_bid_eur=220,
+                seconds_remaining=500.0,
+                is_leader=False,
+                reserve_status=ReserveStatus.NO_RESERVE,
+                is_closed=False,
+            )
+
+        async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
+            raise NotImplementedError
+
+        async def close(self) -> None:
+            pass
+
+    async def controller_factory(lot: WatchLot) -> DupLotController:
+        return DupLotController(lot)
+
+    orchestrator = AuctionOrchestrator(
+        excel_path,
+        controller_factory=controller_factory,
+    )
+    assert len(orchestrator.lots) == 2
+    assert orchestrator.lots[0].lot_id != orchestrator.lots[1].lot_id
+
+    # Round 1: both rows are patrolled
+    await orchestrator.run_patrol_step()
+    assert inspected_rows == [7, 8]
+
+    # Simulate 65 seconds elapsed for both lots (near tier = 60s)
+    for lot in orchestrator.lots:
+        orchestrator._last_patrolled_at[lot.lot_id] -= 65.0
+
+    # Round 2: both rows must be patrolled again (second row is not starved by first row)
+    await orchestrator.run_patrol_step()
+    assert inspected_rows == [7, 8, 7, 8]

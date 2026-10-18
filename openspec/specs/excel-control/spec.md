@@ -7,7 +7,7 @@ Manages reading input parameters (global budget in euros, watch URLs, and clean 
 ## Requirements
 
 ### Requirement: Reading global configuration and watch catalog
-The system SHALL read from the Excel spreadsheet the global maximum budget in euros and the list of candidate watches consisting of their Catawiki URL and user-authorized clean maximum bid, detecting live modifications and reconciling active in-memory state during execution.
+The system SHALL read from the Excel spreadsheet the global maximum budget in euros and the list of candidate watches consisting of their Catawiki URL and user-authorized clean maximum bid, detecting live modifications across all actual worksheet rows regardless of XML dimension metadata and reconciling active in-memory state during execution.
 
 #### Scenario: Valid initial loading of Excel file
 - **WHEN** the agent starts or reloads the Excel file with a positive global budget and rows with URL and clean maximum bid
@@ -22,8 +22,8 @@ The system SHALL read from the Excel spreadsheet the global maximum budget in eu
 - **THEN** the system detects the modification, updates the global budget in the atomic registry (Ledger), and recalculates available balance and dynamic portfolio ceilings without restarting the orchestrator
 
 #### Scenario: Dynamic addition of new watches at runtime
-- **WHEN** the user adds a new row with a Catawiki URL and valid maximum bid in the Excel file during execution
-- **THEN** the system adds the new lot to the active portfolio in pending status and triggers an immediate patrol query to extract its market data
+- **WHEN** the user adds a new row with a Catawiki URL and valid maximum bid in the Excel file during execution, even if the spreadsheet editor saves the file with stale or unsized XML `<dimension>` metadata
+- **THEN** the system scans all actual worksheet rows, adds the new lot to the active portfolio in pending status within the next poll interval (or before the next lot query if a patrol round is currently running), and triggers an immediate patrol query to extract its market data
 
 #### Scenario: Dynamic maximum bid modification and reactivation of viable lots
 - **WHEN** the user modifies the maximum bid of an existing watch in the Excel file

@@ -240,3 +240,41 @@ def test_extract_input_signature_detects_changes(tmp_path: Path) -> None:
     assert extract_input_signature(tmp_path / "non_existent.xlsx") is None
 
 
+def test_extract_input_signature_ignores_stale_xml_dimension(tmp_path: Path) -> None:
+    """
+    Verify that extract_input_signature reads all actual worksheet rows even when
+    a spreadsheet editor saves the .xlsx file with a stale or truncated <dimension> tag.
+    """
+    import re
+    import zipfile
+
+    excel_path = tmp_path / "stale_dimension.xlsx"
+    rows = [
+        ("https://www.catawiki.com/es/l/1001-omega", 500),
+        ("https://www.catawiki.com/es/l/1002-seiko", 300),
+        ("https://www.catawiki.com/es/l/1003-tissot", 250),
+    ]
+    create_excel_template(excel_path, default_budget_eur=1500, sample_rows=rows)
+
+    # Rewrite xl/worksheets/sheet1.xml inside the .xlsx archive with a stale <dimension ref="A1:J7"/>
+    patched_path = tmp_path / "stale_dimension_patched.xlsx"
+    with zipfile.ZipFile(excel_path, "r") as zin, zipfile.ZipFile(patched_path, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                xml_text = data.decode("utf-8")
+                xml_text = re.sub(
+                    r'<dimension\s+ref="[^"]+"\s*/>',
+                    '<dimension ref="A1:J7"/>',
+                    xml_text,
+                )
+                data = xml_text.encode("utf-8")
+            zout.writestr(item, data)
+
+    sig = extract_input_signature(patched_path)
+    assert sig is not None
+    assert sig.global_budget_eur == 1500
+    assert len(sig.lots_inputs) == 3
+    assert sig.lots_inputs[0] == ("https://www.catawiki.com/es/l/1001-omega", 500, 7)
+    assert sig.lots_inputs[1] == ("https://www.catawiki.com/es/l/1002-seiko", 300, 8)
+    assert sig.lots_inputs[2] == ("https://www.catawiki.com/es/l/1003-tissot", 250, 9)

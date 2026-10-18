@@ -66,7 +66,7 @@ def extract_input_signature(file_path: str | Path) -> ExcelInputSignature | None
     if not target.exists():
         return None
     try:
-        wb = load_workbook(target, data_only=True, read_only=True)
+        wb = load_workbook(target, data_only=True)
     except (PermissionError, OSError):
         return None
     except Exception:
@@ -82,10 +82,12 @@ def extract_input_signature(file_path: str | Path) -> ExcelInputSignature | None
             return None
 
         inputs: list[tuple[str, int, int]] = []
-        max_row = max(ws.max_row or FIRST_DATA_ROW, FIRST_DATA_ROW - 1)
-        for r in range(FIRST_DATA_ROW, max_row + 1):
-            raw_url = ws.cell(row=r, column=1).value
-            raw_max_bid = ws.cell(row=r, column=2).value
+        for r, row_vals in enumerate(
+            ws.iter_rows(min_row=FIRST_DATA_ROW, max_col=2, values_only=True),
+            start=FIRST_DATA_ROW,
+        ):
+            raw_url = row_vals[0] if len(row_vals) > 0 else None
+            raw_max_bid = row_vals[1] if len(row_vals) > 1 else None
             if (raw_url is None or str(raw_url).strip() == "") and (
                 raw_max_bid is None or str(raw_max_bid).strip() == ""
             ):
@@ -228,6 +230,7 @@ def read_workbook_config(file_path: str | Path) -> WorkbookConfigSnapshot:
             )
 
         lots: list[WatchLot] = []
+        seen_lot_ids: set[str] = set()
         max_row = max(ws.max_row, FIRST_DATA_ROW - 1)
         for row_idx in range(FIRST_DATA_ROW, max_row + 1):
             raw_url = ws.cell(row=row_idx, column=1).value
@@ -242,6 +245,9 @@ def read_workbook_config(file_path: str | Path) -> WorkbookConfigSnapshot:
             url_str = str(raw_url).strip() if raw_url is not None else ""
             parsed_max_bid = _parse_positive_eur(raw_max_bid)
             lot_id = extract_lot_id(url_str, fallback_row=row_idx)
+            if lot_id in seen_lot_ids:
+                lot_id = f"{lot_id}-r{row_idx}"
+            seen_lot_ids.add(lot_id)
 
             if not is_valid_catawiki_url(url_str) or parsed_max_bid is None:
                 invalid_lot = WatchLot(

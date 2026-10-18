@@ -218,13 +218,43 @@ class AuctionOrchestrator:
                     exc,
                 )
 
-        # Lot mapping by URL
-        existing_by_url = {lot.url: lot for lot in self.lots}
-        new_by_url = {lot.url: lot for lot in new_config.lots}
+        # Match existing lots to new_config.lots preserving 1-to-1 row parity (including duplicate URLs)
+        unmatched_existing: list[WatchLot] = list(self.lots)
+        matched_pairs: list[tuple[WatchLot, WatchLot]] = []
+        unmatched_new_indices: list[int] = []
 
-        # 2. Removals: existing lots whose URL is no longer in new_config
-        lots_to_remove = [lot for url, lot in existing_by_url.items() if url not in new_by_url]
-        for lot in lots_to_remove:
+        # Pass 1: exact (url, row_index) match
+        for idx, cfg in enumerate(new_config.lots):
+            match_lot = next(
+                (
+                    ex
+                    for ex in unmatched_existing
+                    if ex.url == cfg.url and ex.row_index == cfg.row_index
+                ),
+                None,
+            )
+            if match_lot is not None:
+                unmatched_existing.remove(match_lot)
+                matched_pairs.append((match_lot, cfg))
+            else:
+                unmatched_new_indices.append(idx)
+
+        # Pass 2: fallback match by URL for rows that shifted index
+        new_lots: list[WatchLot] = []
+        for idx in unmatched_new_indices:
+            cfg = new_config.lots[idx]
+            match_lot = next(
+                (ex for ex in unmatched_existing if ex.url == cfg.url),
+                None,
+            )
+            if match_lot is not None:
+                unmatched_existing.remove(match_lot)
+                matched_pairs.append((match_lot, cfg))
+            else:
+                new_lots.append(cfg)
+
+        # 2. Removals: existing lots that did not match any row in new_config
+        for lot in unmatched_existing:
             if lot.lot_id in self._assault_tasks:
                 task = self._assault_tasks.pop(lot.lot_id)
                 task.cancel()
@@ -235,13 +265,21 @@ class AuctionOrchestrator:
             changed = True
             logger.info("Lote eliminado del seguimiento: %s (%s)", lot.lot_id, lot.url)
 
-        remaining_lots = [lot for lot in self.lots if lot.url in new_by_url]
+        remaining_lots: list[WatchLot] = [pair[0] for pair in matched_pairs]
 
         # 3. Modifications of existing lots
-        for lot in remaining_lots:
-            cfg = new_by_url[lot.url]
+        for lot, cfg in matched_pairs:
             if lot.row_index != cfg.row_index:
                 lot.row_index = cfg.row_index
+                changed = True
+
+            if lot.lot_id != cfg.lot_id:
+                old_id = lot.lot_id
+                lot.lot_id = cfg.lot_id
+                if old_id in self._last_patrolled_at:
+                    self._last_patrolled_at[lot.lot_id] = self._last_patrolled_at.pop(old_id)
+                if old_id in self._assault_tasks:
+                    self._assault_tasks[lot.lot_id] = self._assault_tasks.pop(old_id)
                 changed = True
 
             if lot.status == AuctionStatus.VALIDATION_ERROR and cfg.validate_inputs():
@@ -298,8 +336,7 @@ class AuctionOrchestrator:
                         lot.lot_id,
                     )
 
-        # 4. Additions: lots in new_config whose URL was not in existing_by_url
-        new_lots = [lot for url, lot in new_by_url.items() if url not in existing_by_url]
+        # 4. Additions: new lots not matched to any existing lot
         if new_lots:
             remaining_lots.extend(new_lots)
             changed = True
@@ -401,20 +438,38 @@ class AuctionOrchestrator:
         Assault Mode, and launches Assault tasks for lots entering <= 5 min.
         Filters and queries only lots whose assigned interval has elapsed or
         that have no registered prior query (unless force=True).
+        Checks for live Excel updates between sequential lot queries.
         """
-        now = time.monotonic()
-        for lot in self.lots:
+        visited_ids: set[int] = set()
+        inspected_any = False
+
+        while not self._stop_event.is_set():
+            if inspected_any:
+                if await self._check_and_reload_excel():
+                    for item in self.lots:
+                        if item.lot_id not in self._last_patrolled_at:
+                            visited_ids.discard(id(item))
+                if self._reload_event.is_set():
+                    self._reload_event.clear()
+
+            lot = next((item for item in self.lots if id(item) not in visited_ids), None)
+            if lot is None:
+                break
+            visited_ids.add(id(lot))
+
             if not lot.status.is_active or lot.is_closed:
                 continue
             if lot.lot_id in self._assault_tasks and not self._assault_tasks[lot.lot_id].done():
                 continue
 
+            now = time.monotonic()
             interval = self.get_patrol_interval_for_lot(lot)
             last_polled = self._last_patrolled_at.get(lot.lot_id)
             if not force and last_polled is not None and lot.seconds_remaining is not None:
                 if (now - last_polled) < interval:
                     continue
 
+            inspected_any = True
             try:
                 controller = await self._controller_factory(lot)
             except Exception as exc:
