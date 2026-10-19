@@ -17,6 +17,12 @@ class CatawikiPageLoadError(Exception):
     pass
 
 
+class HumanVerificationBlockedError(CatawikiPageLoadError):
+    """Raised when a 'Press & Hold' human verification challenge remains unresolved."""
+
+    pass
+
+
 @dataclass(frozen=True)
 class CatawikiSelectors:
     """Configurable bilingual (ES/EN) DOM selectors and text patterns for Catawiki."""
@@ -88,6 +94,8 @@ class CatawikiSelectors:
         '[role="button"]:has-text("Mantén pulsado")',
         'div:has-text("Press & Hold to confirm")',
     )
+    # User-specific leadership indicators only. Generic phrases such as the bare
+    # "highest bidder" (help texts, bid history...) must never imply leadership.
     leader_phrases: tuple[str, ...] = (
         "eres el máximo pujador",
         "tu puja es la más alta",
@@ -95,7 +103,16 @@ class CatawikiSelectors:
         "tienes la puja más alta",
         "you are the highest bidder",
         "you're the highest bidder",
-        "highest bidder",
+    )
+    # Negative notices that contain a leader phrase and must be removed before matching.
+    not_leader_phrases: tuple[str, ...] = (
+        "ya no eres el máximo pujador",
+        "ya no tienes la puja más alta",
+        "you are no longer the highest bidder",
+        "you're no longer the highest bidder",
+        "you are not the highest bidder",
+        "you're not the highest bidder",
+        "no eres el máximo pujador",
     )
     reserve_not_met_phrases: tuple[str, ...] = (
         "precio de reserva no alcanzado",
@@ -157,6 +174,19 @@ class LotPageSnapshot:
     is_closed: bool = False
     raw_source: str = "dom"
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+def detect_user_leadership(text: str, selectors: CatawikiSelectors | None = None) -> bool:
+    """
+    Returns True only if `text` contains a user-specific leadership indicator.
+    Negative notices ("ya no eres el máximo pujador"...) are removed first, so a
+    phrase embedded in them never implies leadership.
+    """
+    sel = selectors or CatawikiSelectors()
+    cleaned = (text or "").lower()
+    for phrase in sorted(sel.not_leader_phrases, key=len, reverse=True):
+        cleaned = cleaned.replace(phrase, " ")
+    return any(phrase in cleaned for phrase in sel.leader_phrases)
 
 
 def compute_catawiki_next_min_bid(current_bid_eur: int) -> int:
@@ -454,9 +484,31 @@ class CatawikiLotPage:
             return
 
     async def navigate(self, url: str, *, timeout_ms: int = 20000) -> None:
-        """Navigates to the lot URL and attaches the network interceptor."""
+        """Navigates to the lot URL, attaches the network interceptor and clears any challenge."""
         self.attach_network_listener()
         await self.page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        try:
+            await self.ensure_no_challenge()
+        except HumanVerificationBlockedError:
+            # The next snapshot extraction retries and reports the block explicitly.
+            pass
+
+    async def ensure_no_challenge(self) -> bool:
+        """
+        Detects and resolves a 'Press & Hold' human verification challenge on the tab.
+        Returns True if a challenge was found and resolved, False if none was present.
+        Raises HumanVerificationBlockedError if the challenge is still present after holding.
+        """
+        handled = await self._solve_press_and_hold()
+        if not handled:
+            return False
+        if await self._find_press_and_hold_target() is not None:
+            raise HumanVerificationBlockedError(
+                "Verificación humana 'Press & Hold' sin resolver en la página de Catawiki"
+            )
+        if self.post_challenge_wait_seconds > 0:
+            await asyncio.sleep(self.post_challenge_wait_seconds)
+        return True
 
     async def _first_text(self, selectors: tuple[str, ...]) -> str | None:
         for sel in selectors:
@@ -524,6 +576,10 @@ class CatawikiLotPage:
 
     async def extract_snapshot(self) -> LotPageSnapshot:
         """Extracts current lot state combining Next.js SSR, DOM, and JSON network reading."""
+        # 0. Resolve any pending 'Press & Hold' challenge before reading auction data
+        #    (raises HumanVerificationBlockedError if it cannot be resolved).
+        await self.ensure_no_challenge()
+
         # 1. Full visible page text (or main container) to detect ES/EN errors and notices
         body_text = ""
         try:
@@ -572,7 +628,7 @@ class CatawikiLotPage:
             is_closed = net.is_closed
 
         dom_has_no_bids = any(phrase in body_text for phrase in self.selectors.no_bids_phrases)
-        dom_is_leader = any(phrase in body_text for phrase in self.selectors.leader_phrases)
+        dom_is_leader = detect_user_leadership(body_text, self.selectors)
         ssr_start_min = ssr_snap.next_min_bid_eur if ssr_snap is not None else 1
         dom_shows_active_bids = bool(body_text) and not dom_has_no_bids and (
             dom_is_leader
@@ -894,5 +950,7 @@ class CatawikiLotPage:
         if challenge_solved and self.post_challenge_wait_seconds > 0:
             await asyncio.sleep(self.post_challenge_wait_seconds)
 
-        return await self.extract_snapshot()
+        post_snap = await self.extract_snapshot()
+        post_snap.extra["challenge_solved"] = challenge_solved
+        return post_snap
 

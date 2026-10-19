@@ -69,6 +69,32 @@ chronobid --excel relojes.xlsx --cdp-port 9222
 
 ---
 
+## Lot Statuses
+
+| Status | Meaning |
+|---|---|
+| `PATRULLA` / `ASALTO` | Active lot in Patrol Mode (> 5 min) or Assault Mode (≤ 5 min). |
+| `LIDER` / `SUPERADO` | You are the provisional highest bidder / you were outbid. |
+| `BLOQUEADO: Verificación Humana` | A Catawiki "Press & Hold" challenge could not be resolved automatically. The lot stays active and the agent keeps retrying; complete the challenge in the browser if it persists. |
+| `GANADO` | Lot won. |
+| `PERDIDO: Superó Máximo` | The price went above your maximum bid (column B). |
+| `PERDIDO: Sin Presupuesto` | A bid was due inside the final window but was blocked by the global budget or the dynamic ceiling (portfolio reserve). |
+| `PERDIDO` | Lot closed below your maximum without a budget block (e.g. bid not confirmed, submission error, verification block). Check "Notas / Último Evento" and the session log. |
+| `NO ADJUDICADO: Reserva No Alcanzada` | Closed as leader but the reserve price was not met. |
+
+On closure, the "Notas / Último Evento" column keeps the last meaningful event before closing (e.g. `Subasta cerrada en 320 € | Último evento: Puja de 330 € no confirmada en Catawiki`).
+
+## Diagnostic Log
+
+Every session writes a log file to a `logs` folder next to the Excel file, named `chronobid-YYYYMMDD-HHMMSS.log` (path shown in the dashboard header). Use `--log-dir <folder>` to change the location. It records:
+
+- Session start (Excel path, budget, lots) and each lot's final outcome (`FINAL_OUTCOME`).
+- Assault entry/exit and every tactical decision inside the snipe/overtime window (`DECISION`), including remaining seconds, next minimum bid, dynamic ceiling and available budget.
+- Every bid attempt and its result (`BID_ATTEMPT` / `BID_RESULT`): amount, duration, confirmation, challenge solved.
+- Incidents (`INCIDENT`): page-load errors, unresolved human verification, unexpected errors.
+
+---
+
 ## Running Tests
 
 ```powershell

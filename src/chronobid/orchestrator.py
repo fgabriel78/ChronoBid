@@ -12,9 +12,11 @@ from typing import Protocol
 from chronobid.browser.catawiki_page import (
     CatawikiLotPage,
     CatawikiPageLoadError,
+    HumanVerificationBlockedError,
     LotPageSnapshot,
 )
 from chronobid.browser.cdp_client import CDPBrowserClient
+from chronobid.diagnostics import DecisionTracer
 from chronobid.excel.sync_worker import ExcelSyncWorker
 from chronobid.excel.workbook_io import (
     WorkbookConfigSnapshot,
@@ -37,6 +39,8 @@ class LotPageControllerProtocol(Protocol):
 
     async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot: ...
 
+    async def ensure_no_challenge(self) -> bool: ...
+
     async def close(self) -> None: ...
 
 
@@ -51,6 +55,9 @@ class PlaywrightLotController:
 
     async def submit_minimum_bid(self, bid_amount_eur: int) -> LotPageSnapshot:
         return await self._cw_page.submit_minimum_bid(bid_amount_eur)
+
+    async def ensure_no_challenge(self) -> bool:
+        return await self._cw_page.ensure_no_challenge()
 
     async def close(self) -> None:
         try:
@@ -83,6 +90,7 @@ class AuctionOrchestrator:
         patrol_interval_far_seconds: float | None = None,
         assault_tick_seconds: float = 0.25,
         snipe_window_seconds: float = 25.0,
+        pre_snipe_check_seconds: float = 10.0,
         excel_retry_seconds: float = 2.0,
         excel_poll_interval_seconds: float = 2.0,
         on_state_change: Callable[[list[WatchLot], BudgetLedger], None] | None = None,
@@ -105,6 +113,7 @@ class AuctionOrchestrator:
                 300.0 if patrol_interval_seconds == 60.0 else patrol_interval_seconds * 5.0
             )
         self.assault_tick_seconds = assault_tick_seconds
+        self.pre_snipe_check_seconds = max(0.0, pre_snipe_check_seconds)
         self.excel_poll_interval_seconds = excel_poll_interval_seconds
         self.on_state_change = on_state_change
 
@@ -113,6 +122,11 @@ class AuctionOrchestrator:
         self.lots: list[WatchLot] = config.lots
         self.optimizer = PortfolioOptimizer()
         self.tactics = TacticalBiddingEngine(snipe_window_seconds=snipe_window_seconds)
+        self.decision_tracer = DecisionTracer(
+            snipe_window_seconds=snipe_window_seconds,
+            overtime_window_seconds=self.tactics.overtime_window_seconds,
+        )
+        self._outcome_logged: set[int] = set()
         self.sync_worker = ExcelSyncWorker(
             self.excel_path,
             retry_interval_seconds=excel_retry_seconds,
@@ -372,9 +386,28 @@ class AuctionOrchestrator:
     def _emit_and_enqueue(self) -> None:
         """Recalculates dynamic ceilings, notifies UI callback, and enqueues Excel persistence."""
         self.optimizer.refresh_all_ceilings(self.lots, self.ledger)
+        self._log_final_outcomes()
         self.sync_worker.enqueue_state(self.ledger.snapshot(), self.lots)
         if self.on_state_change is not None:
             self.on_state_change(self.lots, self.ledger)
+
+    def _log_final_outcomes(self) -> None:
+        """Logs the final outcome of each lot exactly once when it becomes terminal."""
+        for lot in self.lots:
+            if not lot.status.is_terminal or id(lot) in self._outcome_logged:
+                continue
+            self._outcome_logged.add(id(lot))
+            logger.info(
+                "FINAL_OUTCOME lot=%s row=%s status=%s closing_price=%d my_last_bid=%d "
+                "max=%d last_event=%s",
+                lot.lot_id,
+                lot.row_index,
+                lot.status.value,
+                lot.current_bid_eur,
+                lot.my_last_bid_eur,
+                lot.max_bid_eur,
+                lot.last_event or "-",
+            )
 
     def has_active_lots(self) -> bool:
         """Returns True while at least one non-terminal lot remains."""
@@ -492,6 +525,17 @@ class AuctionOrchestrator:
                         title=snap.title or lot.title,
                         closing_time=snap.closing_time or lot.closing_time,
                     )
+                except HumanVerificationBlockedError as err:
+                    logger.warning("Verificación humana sin resolver en patrulla para %s: %s", lot.lot_id, err)
+                    lot.mark_verification_blocked(str(err))
+                    self._emit_and_enqueue()
+                    if (
+                        lot.seconds_remaining is not None
+                        and lot.seconds_remaining <= self.assault_threshold_seconds
+                    ):
+                        # Assault Mode retries resolution on every tick instead of waiting for patrol
+                        self._spawn_assault_task(lot)
+                    continue
                 except CatawikiPageLoadError as err:
                     logger.warning("Error puntual de carga en Catawiki para %s: %s", lot.lot_id, err)
                     lot.notes = f"Error puntual de carga en Catawiki (reintentando en patrulla): {err}"
@@ -533,25 +577,85 @@ class AuctionOrchestrator:
         )
         self._assault_tasks[lot.lot_id] = task
 
+    async def _pre_snipe_challenge_check(
+        self, controller: LotPageControllerProtocol, lot: WatchLot
+    ) -> bool:
+        """
+        Verifies that no human verification challenge is pending before the snipe window.
+        Returns False if the lot is blocked by an unresolved challenge, True otherwise.
+        """
+        check = getattr(controller, "ensure_no_challenge", None)
+        if check is None:
+            return True
+        try:
+            solved = await check()
+            logger.info(
+                "Comprobación pre-snipe en %s (%.1fs restantes): %s",
+                lot.lot_id,
+                lot.seconds_remaining or 0.0,
+                "reto resuelto" if solved else "sin reto",
+            )
+            if solved:
+                lot.record_event("Verificación humana resuelta antes de la ventana de puja")
+            return True
+        except HumanVerificationBlockedError as err:
+            logger.warning("Comprobación pre-snipe bloqueada en %s: %s", lot.lot_id, err)
+            lot.mark_verification_blocked(str(err))
+            return False
+        except Exception as exc:
+            logger.error("Error en comprobación pre-snipe de %s: %s", lot.lot_id, exc)
+            return True
+
     async def _run_assault_for_lot(self, lot: WatchLot) -> None:
         """
         Maintains a dedicated tab in Assault Mode (< 5 min and +90s extensions)
         until the lot finishes or is discarded.
         """
+        logger.info(
+            "ASSAULT_ENTRY lot=%s row=%s secs=%s current=%d max=%d",
+            lot.lot_id,
+            lot.row_index,
+            lot.seconds_remaining,
+            lot.current_bid_eur,
+            lot.max_bid_eur,
+        )
         controller = await self._controller_factory(lot)
+        pre_snipe_threshold = self.tactics.snipe_window_seconds + self.pre_snipe_check_seconds
+        pre_snipe_armed = True
         try:
             while not self._stop_event.is_set() and lot.status.is_active and not lot.is_closed:
                 try:
                     snap = await controller.extract_snapshot()
+                except HumanVerificationBlockedError as err:
+                    logger.warning(
+                        "INCIDENT lot=%s secs=%s type=verification_blocked: %s",
+                        lot.lot_id,
+                        lot.seconds_remaining,
+                        err,
+                    )
+                    lot.mark_verification_blocked(str(err))
+                    self._emit_and_enqueue()
+                    await asyncio.sleep(self.assault_tick_seconds)
+                    continue
                 except CatawikiPageLoadError as err:
-                    logger.warning("Fallo transitorio en asalto para %s: %s", lot.lot_id, err)
-                    lot.notes = f"Fallo transitorio en asalto: {err}"
+                    logger.warning(
+                        "INCIDENT lot=%s secs=%s type=page_load_error: %s",
+                        lot.lot_id,
+                        lot.seconds_remaining,
+                        err,
+                    )
+                    lot.record_event(f"Fallo transitorio en asalto: {err}")
                     self._emit_and_enqueue()
                     await asyncio.sleep(self.assault_tick_seconds)
                     continue
                 except Exception as exc:
-                    logger.error("Error inesperado en asalto para %s: %s", lot.lot_id, exc)
-                    lot.notes = f"Error en asalto: {exc}"
+                    logger.error(
+                        "INCIDENT lot=%s secs=%s type=unexpected_error: %s",
+                        lot.lot_id,
+                        lot.seconds_remaining,
+                        exc,
+                    )
+                    lot.record_event(f"Error en asalto: {exc}")
                     self._emit_and_enqueue()
                     await asyncio.sleep(self.assault_tick_seconds)
                     continue
@@ -567,19 +671,61 @@ class AuctionOrchestrator:
                     closing_time=snap.closing_time or lot.closing_time,
                 )
 
+                # Pre-snipe challenge clearance: once per crossing of the threshold,
+                # re-armed when an overtime extension pushes time back above it.
+                if lot.seconds_remaining is not None and not lot.is_closed:
+                    if lot.seconds_remaining > pre_snipe_threshold:
+                        pre_snipe_armed = True
+                    elif pre_snipe_armed:
+                        pre_snipe_armed = False
+                        if not await self._pre_snipe_challenge_check(controller, lot):
+                            self._emit_and_enqueue()
+                            await asyncio.sleep(self.assault_tick_seconds)
+                            continue
+
                 decision = await self.tactics.process_tick_and_decide(
                     lot, self.lots, self.ledger, self.optimizer
                 )
+                self.decision_tracer.log_decision(lot, decision, self.ledger)
 
                 if decision.should_bid and decision.bid_amount_eur is not None:
                     bid_amt = decision.bid_amount_eur
+                    bid_started = time.monotonic()
+                    secs_at_bid = lot.seconds_remaining
+                    logger.info(
+                        "BID_ATTEMPT lot=%s amount=%d secs=%s reason=%s",
+                        lot.lot_id,
+                        bid_amt,
+                        f"{secs_at_bid:.1f}" if secs_at_bid is not None else "None",
+                        decision.reason,
+                    )
                     try:
                         post_snap = await controller.submit_minimum_bid(bid_amt)
                         bid_accepted = (
                             post_snap.is_leader or post_snap.current_bid_eur >= bid_amt
                         )
+                        logger.info(
+                            "BID_RESULT lot=%s amount=%d confirmed=%s duration=%.2fs "
+                            "challenge_solved=%s post_current=%d post_leader=%s post_secs=%s",
+                            lot.lot_id,
+                            bid_amt,
+                            bid_accepted,
+                            time.monotonic() - bid_started,
+                            bool(post_snap.extra.get("challenge_solved", False)),
+                            post_snap.current_bid_eur,
+                            post_snap.is_leader,
+                            post_snap.seconds_remaining,
+                        )
                         if bid_accepted:
                             lot.record_own_bid(bid_amt, reserve_status=post_snap.reserve_status)
+                        else:
+                            logger.warning(
+                                "Puja de %d € en %s no confirmada en Catawiki; liberando reserva.",
+                                bid_amt,
+                                lot.lot_id,
+                            )
+                            await self.ledger.release(lot.lot_id)
+                            lot.record_event(f"Puja de {bid_amt} € no confirmada en Catawiki")
                         lot.apply_market_snapshot(
                             current_bid_eur=post_snap.current_bid_eur,
                             next_min_bid_eur=post_snap.next_min_bid_eur,
@@ -590,21 +736,31 @@ class AuctionOrchestrator:
                             title=post_snap.title or lot.title,
                             closing_time=post_snap.closing_time or lot.closing_time,
                         )
-                        if not bid_accepted:
-                            logger.warning(
-                                "Puja de %d € en %s no confirmada en Catawiki; liberando reserva.",
-                                bid_amt,
-                                lot.lot_id,
-                            )
-                            await self.ledger.release(lot.lot_id)
-                            lot.notes = f"Puja de {bid_amt} € no confirmada en Catawiki"
-                        elif not lot.is_leader:
+                        if bid_accepted and not lot.is_leader:
                             # If outbid by another bidder in the same millisecond after bidding, release reservation
                             await self.ledger.release(lot.lot_id)
-                    except Exception as exc:
-                        logger.error("Error al enviar puja en %s: %s", lot.lot_id, exc)
+                    except HumanVerificationBlockedError as err:
+                        logger.error(
+                            "BID_RESULT lot=%s amount=%d confirmed=False duration=%.2fs "
+                            "incident=verification_blocked: %s",
+                            lot.lot_id,
+                            bid_amt,
+                            time.monotonic() - bid_started,
+                            err,
+                        )
                         await self.ledger.release(lot.lot_id)
-                        lot.notes = f"Error de envío de puja: {exc}"
+                        lot.mark_verification_blocked(f"puja de {bid_amt} € no enviada ({err})")
+                    except Exception as exc:
+                        logger.error(
+                            "BID_RESULT lot=%s amount=%d confirmed=False duration=%.2fs "
+                            "incident=submission_error: %s",
+                            lot.lot_id,
+                            bid_amt,
+                            time.monotonic() - bid_started,
+                            exc,
+                        )
+                        await self.ledger.release(lot.lot_id)
+                        lot.record_event(f"Error de envío de puja de {bid_amt} €: {exc}")
 
                 self._emit_and_enqueue()
 
@@ -619,6 +775,13 @@ class AuctionOrchestrator:
             )
             self._emit_and_enqueue()
         finally:
+            logger.info(
+                "ASSAULT_EXIT lot=%s row=%s status=%s secs=%s",
+                lot.lot_id,
+                lot.row_index,
+                lot.status.value,
+                lot.seconds_remaining,
+            )
             await controller.close()
 
     async def _wait_interval_with_reload_check(self, total_wait_seconds: float) -> None:
@@ -652,6 +815,24 @@ class AuctionOrchestrator:
         Runs the full orchestrator (ExcelSyncWorker + Patrol/Assault loop)
         until all auctions have finished or stop is requested.
         """
+        logger.info(
+            "SESSION_START excel=%s global_budget=%d lots=%d snipe=%.0fs assault=%.0fs",
+            self.excel_path.resolve(),
+            self.ledger.global_budget_eur,
+            len(self.lots),
+            self.tactics.snipe_window_seconds,
+            self.assault_threshold_seconds,
+        )
+        for lot in self.lots:
+            logger.info(
+                "SESSION_LOT row=%s lot=%s max=%d status=%s url=%s",
+                lot.row_index,
+                lot.lot_id,
+                lot.max_bid_eur,
+                lot.status.value,
+                lot.url,
+            )
+
         if self.cdp_client is not None:
             if not self.cdp_client.is_connected:
                 await self.cdp_client.connect()

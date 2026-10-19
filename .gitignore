@@ -23,3 +23,6 @@ htmlcov/
 ~$*.xlsx
 .~lock.*#
 relojes.xlsx
+
+# Logs de diagnóstico por sesión
+logs/

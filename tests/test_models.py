@@ -252,3 +252,127 @@ def test_apply_market_snapshot_does_not_close_if_closing_time_is_future_without_
     assert lot.is_closed is False
     assert lot.status != AuctionStatus.LOST_OTHER
 
+
+
+def _closing_lot(**kwargs: object) -> WatchLot:
+    return WatchLot(
+        lot_id="lot-close",
+        url="https://www.catawiki.com/es/l/107567796-seiko-presage-srpg05j1",
+        max_bid_eur=350,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_closing_within_max_without_budget_block_is_generic_loss() -> None:
+    lot = _closing_lot()
+    status = lot.apply_market_snapshot(
+        current_bid_eur=320,
+        next_min_bid_eur=340,
+        seconds_remaining=0.0,
+        is_leader=False,
+        is_closed=True,
+    )
+    assert status == AuctionStatus.LOST_OTHER
+    assert lot.notes == "Subasta cerrada en 320 €"
+
+
+def test_closing_within_max_with_budget_block_is_no_budget_loss() -> None:
+    lot = _closing_lot()
+    lot.budget_blocked_at = 12.0
+    lot.record_event("Bloqueado por techo dinámico/presupuesto (340 € > 300 €)")
+    status = lot.apply_market_snapshot(
+        current_bid_eur=320,
+        next_min_bid_eur=340,
+        seconds_remaining=0.0,
+        is_leader=False,
+        is_closed=True,
+    )
+    assert status == AuctionStatus.LOST_NO_BUDGET
+    assert "sin presupuesto" in lot.notes
+    assert "Último evento: Bloqueado por techo dinámico/presupuesto" in lot.notes
+
+
+def test_closing_preserves_last_meaningful_event_in_notes() -> None:
+    lot = _closing_lot()
+    lot.record_event("Puja de 330 € no confirmada en Catawiki")
+    lot.notes = "Superado (actual: 320 €)"  # routine note overwrites current note only
+    lot.apply_market_snapshot(
+        current_bid_eur=320,
+        next_min_bid_eur=340,
+        seconds_remaining=0.0,
+        is_leader=False,
+        is_closed=True,
+    )
+    assert lot.status == AuctionStatus.LOST_OTHER
+    assert lot.notes == (
+        "Subasta cerrada en 320 € | Último evento: Puja de 330 € no confirmada en Catawiki"
+    )
+
+
+def test_closed_terminal_lot_is_never_reclassified() -> None:
+    lot = _closing_lot()
+    lot.apply_market_snapshot(
+        current_bid_eur=320,
+        next_min_bid_eur=340,
+        seconds_remaining=0.0,
+        is_leader=False,
+        is_closed=True,
+    )
+    assert lot.status == AuctionStatus.LOST_OTHER
+    lot.budget_blocked_at = 5.0
+    lot.apply_market_snapshot(
+        current_bid_eur=320,
+        next_min_bid_eur=340,
+        seconds_remaining=0.0,
+        is_leader=False,
+        is_closed=True,
+    )
+    assert lot.status == AuctionStatus.LOST_OTHER
+
+
+def test_record_own_bid_clears_budget_block_and_sets_last_event() -> None:
+    lot = _closing_lot()
+    lot.budget_blocked_at = 20.0
+    lot.record_own_bid(330)
+    assert lot.budget_blocked_at is None
+    assert lot.last_event == "Puja enviada: 330 €"
+
+
+def test_verification_blocked_status_is_active_viable_and_cleared_by_snapshot() -> None:
+    lot = _closing_lot()
+    lot.apply_market_snapshot(
+        current_bid_eur=300,
+        next_min_bid_eur=320,
+        seconds_remaining=120.0,
+        is_leader=False,
+    )
+    lot.mark_verification_blocked("Press & Hold sin resolver")
+    assert lot.status == AuctionStatus.BLOCKED_VERIFICATION
+    assert lot.status.value == "BLOQUEADO: Verificación Humana"
+    assert lot.status.is_active and not lot.status.is_terminal
+    assert lot.is_viable
+    assert "120s restantes" in lot.notes
+    assert lot.last_event.startswith("Bloqueado por verificación humana")
+
+    status = lot.apply_market_snapshot(
+        current_bid_eur=300,
+        next_min_bid_eur=320,
+        seconds_remaining=100.0,
+        is_leader=False,
+    )
+    assert status == AuctionStatus.ASSAULT
+
+
+def test_blocked_until_close_ends_as_generic_loss_with_verification_event() -> None:
+    lot = _closing_lot()
+    lot.seconds_remaining = 10.0
+    lot.mark_verification_blocked()
+    lot.apply_market_snapshot(
+        current_bid_eur=320,
+        next_min_bid_eur=340,
+        seconds_remaining=0.0,
+        is_leader=False,
+        is_closed=True,
+    )
+    assert lot.status == AuctionStatus.LOST_OTHER
+    assert "Último evento: Bloqueado por verificación humana" in lot.notes

@@ -1090,3 +1090,43 @@ async def test_submit_minimum_bid_resolves_press_and_hold_before_confirm() -> No
 
 
 
+
+
+def test_generic_highest_bidder_text_does_not_imply_leadership() -> None:
+    from chronobid.browser.catawiki_page import detect_user_leadership
+
+    assert "highest bidder" not in CatawikiSelectors().leader_phrases
+    assert not detect_user_leadership("The highest bidder wins the lot when the timer ends")
+    assert not detect_user_leadership("Historial de pujas: highest bidder 320 €")
+    assert not detect_user_leadership("Ya no eres el máximo pujador")
+    assert not detect_user_leadership("You're no longer the highest bidder")
+    assert detect_user_leadership("Eres el máximo pujador")
+    assert detect_user_leadership("Lot 123 | You're the highest bidder | Reserve met")
+
+
+async def test_extract_snapshot_ignores_generic_highest_bidder_text() -> None:
+    class GenericTextPage(SimulatedCatawikiDOMPage):
+        def locator(self, selector: str) -> SimulatedLocator:
+            if selector == "body":
+                return SimulatedLocator(
+                    [SimulatedElement(text=f"{self.title} | The highest bidder wins | Sin reserva")]
+                )
+            return super().locator(selector)
+
+    page = CatawikiLotPage(GenericTextPage(current_bid=60, next_min_bid=65, is_leader=False))
+    snap = await page.extract_snapshot()
+    assert snap.is_leader is False
+
+
+async def test_extract_snapshot_ignores_outbid_notice() -> None:
+    class OutbidNoticePage(SimulatedCatawikiDOMPage):
+        def locator(self, selector: str) -> SimulatedLocator:
+            if selector == "body":
+                return SimulatedLocator(
+                    [SimulatedElement(text=f"{self.title} | Ya no eres el máximo pujador")]
+                )
+            return super().locator(selector)
+
+    page = CatawikiLotPage(OutbidNoticePage(current_bid=60, next_min_bid=65))
+    snap = await page.extract_snapshot()
+    assert snap.is_leader is False

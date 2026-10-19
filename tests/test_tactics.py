@@ -186,3 +186,111 @@ async def test_process_tick_and_decide_syncs_preexisting_leader_commitment() -> 
     assert ledger.committed_leader_eur == 1
     assert ledger.available_eur == 1499
 
+
+
+async def test_row12_regression_final_consolidation_keeps_generic_loss() -> None:
+    """
+    Reproduces the 2026-10-19 row 12 sequence: lot closes in assault without any budget
+    block, the optimizer zeroes its dynamic ceiling, and the final consolidation
+    reconciles it again. The outcome must remain PERDIDO (never Sin Presupuesto).
+    """
+    ledger = BudgetLedger(global_budget_eur=1500)
+    optimizer = PortfolioOptimizer()
+    engine = TacticalBiddingEngine(snipe_window_seconds=25.0)
+    lot = WatchLot(
+        lot_id="lot-row12",
+        url="https://www.catawiki.com/es/l/107567796-seiko-presage-srpg05j1",
+        max_bid_eur=350,
+    )
+
+    # Closing tick inside the assault loop
+    lot.apply_market_snapshot(
+        current_bid_eur=320,
+        next_min_bid_eur=340,
+        seconds_remaining=0.0,
+        is_leader=False,
+        reserve_status=ReserveStatus.NO_RESERVE,
+        is_closed=True,
+    )
+    await engine.process_tick_and_decide(lot, [lot], ledger, optimizer)
+    assert lot.status == AuctionStatus.LOST_OTHER
+
+    # _emit_and_enqueue -> refresh_all_ceilings zeroes the ceiling of the closed lot
+    optimizer.refresh_all_ceilings([lot], ledger)
+    assert lot.dynamic_ceiling_eur == 0
+
+    # Final consolidation after the loop
+    await engine.process_tick_and_decide(lot, [lot], ledger, optimizer)
+    assert lot.status == AuctionStatus.LOST_OTHER
+    assert "Sin Presupuesto" not in lot.status.value
+
+
+async def test_genuine_budget_block_in_snipe_window_closes_as_no_budget() -> None:
+    ledger = BudgetLedger(global_budget_eur=300)
+    optimizer = PortfolioOptimizer()
+    engine = TacticalBiddingEngine(snipe_window_seconds=25.0)
+    lot = WatchLot(
+        lot_id="lot-budget",
+        url="https://www.catawiki.com/es/l/4004-longines",
+        max_bid_eur=400,
+    )
+    lot.apply_market_snapshot(
+        current_bid_eur=310,
+        next_min_bid_eur=330,
+        seconds_remaining=15.0,
+        is_leader=False,
+        reserve_status=ReserveStatus.NO_RESERVE,
+    )
+    decision = await engine.process_tick_and_decide(lot, [lot], ledger, optimizer)
+    assert decision.should_bid is False
+    assert lot.budget_blocked_at == 15.0
+    assert "techo dinámico/presupuesto" in lot.last_event
+
+    lot.apply_market_snapshot(
+        current_bid_eur=310,
+        next_min_bid_eur=330,
+        seconds_remaining=0.0,
+        is_leader=False,
+        reserve_status=ReserveStatus.NO_RESERVE,
+        is_closed=True,
+    )
+    await engine.process_tick_and_decide(lot, [lot], ledger, optimizer)
+    assert lot.status == AuctionStatus.LOST_NO_BUDGET
+
+
+async def test_budget_block_outside_window_is_not_recorded() -> None:
+    ledger = BudgetLedger(global_budget_eur=300)
+    optimizer = PortfolioOptimizer()
+    engine = TacticalBiddingEngine(snipe_window_seconds=25.0)
+    lot = WatchLot(
+        lot_id="lot-budget-early",
+        url="https://www.catawiki.com/es/l/4005-longines",
+        max_bid_eur=400,
+    )
+    lot.apply_market_snapshot(
+        current_bid_eur=310,
+        next_min_bid_eur=330,
+        seconds_remaining=200.0,
+        is_leader=False,
+        reserve_status=ReserveStatus.NO_RESERVE,
+    )
+    await engine.process_tick_and_decide(lot, [lot], ledger, optimizer)
+    assert lot.budget_blocked_at is None
+
+
+async def test_authorized_bid_clears_previous_budget_block() -> None:
+    ledger = BudgetLedger(global_budget_eur=500)
+    optimizer = PortfolioOptimizer()
+    engine = TacticalBiddingEngine(snipe_window_seconds=25.0)
+    lot = WatchLot(
+        lot_id="lot-recover",
+        url="https://www.catawiki.com/es/l/4006-tissot",
+        max_bid_eur=400,
+        current_bid_eur=200,
+        next_min_bid_eur=220,
+        seconds_remaining=15.0,
+    )
+    lot.budget_blocked_at = 20.0
+    decision = await engine.process_tick_and_decide(lot, [lot], ledger, optimizer)
+    assert decision.should_bid is True
+    assert lot.budget_blocked_at is None

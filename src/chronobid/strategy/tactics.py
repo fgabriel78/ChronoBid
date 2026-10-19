@@ -106,7 +106,9 @@ class TacticalBiddingEngine:
                 )
 
             if next_min > effective_ceiling:
-                lot.notes = (
+                # A bid was due (window open, next_min <= max) but ceiling/budget prevents it.
+                lot.budget_blocked_at = lot.seconds_remaining
+                lot.record_event(
                     f"Bloqueado por techo dinámico/presupuesto ({next_min} € > {effective_ceiling} €)"
                 )
                 return BidDecision(
@@ -185,30 +187,17 @@ class TacticalBiddingEngine:
           - If the lot remains open and `lot.is_leader` is True, synchronizes `lot.current_bid_eur`
             as leader committed balance.
           - If the lot remains open and `lot.is_leader` is False, releases any prior commitment.
+
+        The status of a terminal lot is never changed here: the final outcome is classified
+        once by `WatchLot.apply_market_snapshot` at the closing transition, so repeated
+        reconciliations (e.g. assault final consolidation) cannot re-label it.
         """
         if lot.is_closed or lot.status.is_terminal:
             if lot.status == AuctionStatus.WON:
                 if ledger.get_won(lot.lot_id) == 0:
                     await ledger.confirm_won(lot.lot_id, final_amount_eur=lot.current_bid_eur)
-            else:
-                if ledger.get_committed(lot.lot_id) > 0:
-                    await ledger.release(lot.lot_id)
-                if (
-                    lot.is_closed
-                    and not lot.is_leader
-                    and lot.status
-                    not in {
-                        AuctionStatus.DISCARDED_MAX_EXCEEDED,
-                        AuctionStatus.VALIDATION_ERROR,
-                    }
-                    and lot.next_min_bid_eur <= lot.max_bid_eur
-                    and (
-                        ledger.available_eur < lot.next_min_bid_eur
-                        or lot.dynamic_ceiling_eur < lot.next_min_bid_eur
-                    )
-                ):
-                    lot.status = AuctionStatus.LOST_NO_BUDGET
-                    lot.notes = "Subasta cerrada sin presupuesto/techo disponible suficiente"
+            elif ledger.get_committed(lot.lot_id) > 0:
+                await ledger.release(lot.lot_id)
             return
 
         if lot.is_leader:
@@ -258,11 +247,14 @@ class TacticalBiddingEngine:
             max_lot_bid_eur=ceiling,
         )
         if not reserved:
-            lot.notes = f"Sin saldo disponible para pujar {decision.bid_amount_eur} €"
+            lot.budget_blocked_at = lot.seconds_remaining
+            lot.record_event(f"Sin saldo disponible para pujar {decision.bid_amount_eur} €")
             return BidDecision(
                 should_bid=False,
                 reason=lot.notes,
                 dynamic_ceiling_eur=ceiling,
             )
 
+        # A bid is now authorized: any earlier budget block has been recovered.
+        lot.budget_blocked_at = None
         return decision

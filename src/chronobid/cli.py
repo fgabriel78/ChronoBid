@@ -19,13 +19,18 @@ from chronobid.browser.cdp_client import (
     SessionNotAuthenticatedError,
     build_browser_launch_command,
 )
+from chronobid.diagnostics import setup_session_logging, teardown_session_logging
 from chronobid.excel.workbook_io import create_excel_template
 from chronobid.models.auction import WatchLot
 from chronobid.orchestrator import AuctionOrchestrator
 from chronobid.strategy.ledger import BudgetLedger
 
 
-def build_dashboard_renderable(lots: list[WatchLot], ledger: BudgetLedger) -> Group:
+def build_dashboard_renderable(
+    lots: list[WatchLot],
+    ledger: BudgetLedger,
+    log_path: Path | None = None,
+) -> Group:
     """Builds budget panel and watch table for Rich."""
     snap = ledger.snapshot()
     budget_summary = (
@@ -34,6 +39,8 @@ def build_dashboard_renderable(lots: list[WatchLot], ledger: BudgetLedger) -> Gr
         f"[bold yellow]Comprometido (Líder):[/bold yellow] {snap.committed_leader_eur} €   |   "
         f"[bold white]Saldo Disponible:[/bold white] {snap.available_eur} €"
     )
+    if log_path is not None:
+        budget_summary += f"\n[dim]Log de sesión: {log_path}[/dim]"
     budget_panel = Panel(budget_summary, title="ChronoBid · Contabilidad Atómica", border_style="cyan")
 
     table = Table(expand=True, show_lines=False)
@@ -127,6 +134,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["chrome", "edge"],
         help="Muestra el comando para abrir Chrome o Edge con depuración remota CDP en Windows y termina.",
     )
+    parser.add_argument(
+        "--log-dir",
+        default=None,
+        help=(
+            "Directorio donde guardar el log de diagnóstico de la sesión "
+            "(por defecto: carpeta 'logs' junto al fichero Excel)."
+        ),
+    )
     return parser
 
 
@@ -137,7 +152,13 @@ async def _run_agent_async(
     snipe_seconds: float,
     assault_seconds: float,
     console: Console,
+    log_dir: Path | None = None,
 ) -> int:
+    log_path = setup_session_logging(
+        excel_path,
+        log_dir,
+        on_error=lambda msg: console.print(f"[bold yellow]Aviso:[/bold yellow] {msg}"),
+    )
     cdp_client = CDPBrowserClient(cdp_url=cdp_url)
     try:
         orchestrator = AuctionOrchestrator(
@@ -148,16 +169,17 @@ async def _run_agent_async(
         )
     except Exception as exc:
         console.print(f"[bold red]Error al cargar el fichero Excel:[/bold red] {exc}")
+        teardown_session_logging()
         return 1
 
     try:
         with Live(
-            build_dashboard_renderable(orchestrator.lots, orchestrator.ledger),
+            build_dashboard_renderable(orchestrator.lots, orchestrator.ledger, log_path),
             console=console,
             refresh_per_second=4,
         ) as live:
             orchestrator.on_state_change = lambda lots, ledger: live.update(
-                build_dashboard_renderable(lots, ledger)
+                build_dashboard_renderable(lots, ledger, log_path)
             )
             await orchestrator.run_until_complete()
     except (BrowserConnectionError, SessionNotAuthenticatedError) as exc:
@@ -171,6 +193,9 @@ async def _run_agent_async(
         console.print("\n[yellow]Parada solicitada por el usuario.[/yellow]")
     finally:
         await cdp_client.close()
+        teardown_session_logging()
+        if log_path is not None:
+            console.print(f"[dim]Log de sesión guardado en: {log_path}[/dim]")
 
     return 0
 
@@ -211,6 +236,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             snipe_seconds=args.snipe_seconds,
             assault_seconds=args.assault_seconds,
             console=console,
+            log_dir=Path(args.log_dir) if args.log_dir else None,
         )
     )
     return exit_code

@@ -29,6 +29,7 @@ class AuctionStatus(str, Enum):
     ASSAULT = "ASALTO"
     LEADER = "LIDER"
     OUTBID = "SUPERADO"
+    BLOCKED_VERIFICATION = "BLOQUEADO: Verificación Humana"
     WON = "GANADO"
     DISCARDED_MAX_EXCEEDED = "PERDIDO: Superó Máximo"
     LOST_NO_BUDGET = "PERDIDO: Sin Presupuesto"
@@ -171,6 +172,12 @@ class WatchLot:
     dynamic_ceiling_eur: int = 0
     notes: str = ""
     is_closed: bool = False
+    # Remaining seconds at which a due bid was last blocked by the dynamic ceiling or
+    # the available budget (None if no unrecovered budget block exists).
+    budget_blocked_at: float | None = None
+    # Last meaningful pre-closure event (bid failure, verification block, budget block...)
+    # preserved in the closing notes instead of being overwritten.
+    last_event: str = ""
 
     def __post_init__(self) -> None:
         if not self.lot_id:
@@ -218,6 +225,30 @@ class WatchLot:
             return False
         return True
 
+    def record_event(self, event: str) -> None:
+        """Records a meaningful event both as current note and as last event for closure."""
+        self.last_event = event
+        self.notes = event
+
+    def mark_verification_blocked(self, detail: str = "") -> None:
+        """Flags an active lot as blocked by an unresolved human verification challenge."""
+        if self.status.is_terminal or self.is_closed:
+            return
+        self.status = AuctionStatus.BLOCKED_VERIFICATION
+        rem = (
+            f"{self.seconds_remaining:.0f}s restantes"
+            if self.seconds_remaining is not None
+            else "tiempo restante desconocido"
+        )
+        suffix = f": {detail}" if detail else ""
+        self.record_event(f"Bloqueado por verificación humana ({rem}){suffix}")
+
+    def _with_last_event(self, closing_summary: str) -> str:
+        """Composes closing notes preserving the last meaningful pre-closure event."""
+        if self.last_event and self.last_event != closing_summary:
+            return f"{closing_summary} | Último evento: {self.last_event}"
+        return closing_summary
+
     def record_own_bid(self, amount_eur: int, reserve_status: ReserveStatus | None = None) -> None:
         """Records a bid placed by the agent respecting invariants."""
         if not self.can_bid_amount(amount_eur):
@@ -231,7 +262,8 @@ class WatchLot:
         self.status = AuctionStatus.LEADER
         if reserve_status is not None:
             self.reserve_status = reserve_status
-        self.notes = f"Puja enviada: {amount_eur} €"
+        self.budget_blocked_at = None
+        self.record_event(f"Puja enviada: {amount_eur} €")
 
     def apply_market_snapshot(
         self,
@@ -247,6 +279,9 @@ class WatchLot:
     ) -> AuctionStatus:
         """Updates lot status from a live Catawiki reading."""
         if self.status == AuctionStatus.VALIDATION_ERROR:
+            return self.status
+        if self.is_closed and self.status.is_terminal:
+            # A closed lot with a final outcome is never re-classified.
             return self.status
 
         if title and not any(phrase in title.lower() for phrase in ERROR_TITLE_PHRASES):
@@ -285,20 +320,27 @@ class WatchLot:
             if self.is_leader:
                 if self.reserve_status == ReserveStatus.NOT_MET:
                     self.status = AuctionStatus.NOT_AWARDED_RESERVE
-                    self.notes = "Subasta cerrada sin alcanzar precio de reserva"
+                    closing_summary = "Subasta cerrada sin alcanzar precio de reserva"
                 else:
                     self.status = AuctionStatus.WON
-                    self.notes = f"Reloj adjudicado por {self.current_bid_eur} €"
+                    closing_summary = f"Reloj adjudicado por {self.current_bid_eur} €"
             else:
                 if (
                     self.current_bid_eur > self.max_bid_eur
                     or self.next_min_bid_eur > self.max_bid_eur
                 ):
                     self.status = AuctionStatus.DISCARDED_MAX_EXCEEDED
-                    self.notes = f"Cerrado por encima de puja máxima ({self.max_bid_eur} €)"
-                elif self.status != AuctionStatus.LOST_NO_BUDGET:
+                    closing_summary = f"Cerrado por encima de puja máxima ({self.max_bid_eur} €)"
+                elif self.budget_blocked_at is not None:
+                    self.status = AuctionStatus.LOST_NO_BUDGET
+                    closing_summary = (
+                        f"Subasta cerrada en {self.current_bid_eur} € sin presupuesto/techo "
+                        f"disponible suficiente"
+                    )
+                else:
                     self.status = AuctionStatus.LOST_OTHER
-                    self.notes = f"Subasta cerrada en {self.current_bid_eur} €"
+                    closing_summary = f"Subasta cerrada en {self.current_bid_eur} €"
+            self.notes = self._with_last_event(closing_summary)
             return self.status
 
         # Auction still open
